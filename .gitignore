@@ -11,10 +11,16 @@ MEMORY.md
 memory/
 ONBOARDING.md
 
+# Personal slide-prep brief (dense LLM-readable summary of the project;
+# overlaps README.md + docs/; meant for one-off slide-making sessions,
+# not the public artifact).
+PROJECT_BRIEF_FOR_SLIDES.md
+
 # =============================================================================
-# Private hw-server (seashell) staging scripts — hard-coded to the author's
-# personal V80 server layout (~/Versal_bitheap/hw_project/, etc.) and not
-# meaningful to external readers of the paper.
+# Internal hw-server staging scripts — hard-coded to a private server layout
+# and not meaningful to external users. Configure your own remote V80 flow
+# via the V80_SERVER / V80_REMOTE_ROOT env vars consumed by run_remote_sim.py
+# and run_remote_synth.py instead.
 # =============================================================================
 scripts/build_and_push_eval.py
 scripts/push_testvectors.py

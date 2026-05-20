@@ -1,0 +1,121 @@
+# =============================================================================
+# Claude Code / AI-assistant artifacts (never push)
+# =============================================================================
+.claude/
+.claude-code/
+.claude_history
+.claude_session
+.claudeignore
+CLAUDE.md
+MEMORY.md
+memory/
+ONBOARDING.md
+
+# =============================================================================
+# Private hw-server (seashell) staging scripts — hard-coded to the author's
+# personal V80 server layout (~/Versal_bitheap/hw_project/, etc.) and not
+# meaningful to external readers of the paper.
+# =============================================================================
+scripts/build_and_push_eval.py
+scripts/push_testvectors.py
+
+# =============================================================================
+# Python
+# =============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.eggs/
+build/
+dist/
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Test / type / lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Jupyter / IPython
+.ipynb_checkpoints/
+profile_default/
+ipython_config.py
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# =============================================================================
+# Generator outputs (regenerable; large; not part of the source artifact)
+#   - work/ holds per-scenario build_butterfly / build_ntt / build_bank runs
+#   - eval_examples/ is the local mirror staged by scripts/build_and_push_eval.py
+#   - versal_arith/versal_arith_generated/ is the default -output_dir of cli.py
+#
+# NOTE: versal_arith/ARITH2026_Evaluation_Examples/ is INTENTIONALLY tracked
+#       — it ships the canonical RTL for the ARITH 2026 paper. Do not ignore.
+# =============================================================================
+work/
+eval_examples/
+versal_arith/versal_arith_generated/
+
+# Stray top-level run logs (sometimes dropped next to work/ by the build scripts)
+/*.log
+
+# =============================================================================
+# Vivado / simulator junk
+# =============================================================================
+.Xil/
+*.jou
+*.str
+*.backup.jou
+*.backup.log
+usage_statistics_webtalk.*
+webtalk*.html
+webtalk*.jou
+webtalk*.log
+vivado_*.backup.*
+xsim.dir/
+*.wdb
+*.pb
+.cxl.*
+
+# =============================================================================
+# Operating-system junk
+# =============================================================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# =============================================================================
+# Editor / IDE
+# =============================================================================
+.idea/
+.vscode/
+*.swp
+*.swo
+*.swn
+*~
+*.bak
+*.tmp
+.project
+.pydevproject
+.settings/

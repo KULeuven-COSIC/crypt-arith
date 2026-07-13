@@ -188,7 +188,7 @@ ARITH 2026 paper:
 
 ```bibtex
 @misc{miao2026versal,
-  author       = {Zetao Miao and Xavier Pottier and Jonas Bertels and
+  author       = {Zetao Miao and Xander Pottier and Jonas Bertels and
                   Wouter Legiest and Ingrid Verbauwhede},
   title        = {{Area-Efficient LUT-Based Multipliers for AMD Versal FPGAs}},
   howpublished = {Cryptology ePrint Archive, Paper 2026/344},

@@ -66,6 +66,38 @@ def _ssh(server: str, remote_cmd: str, **kw) -> subprocess.CompletedProcess:
     return _run(["ssh", server, remote_cmd], **kw)
 
 
+# ssh transport failure; rsync protocol/socket/timeout failures. These are the
+# codes the jump-host connection produces when it drops — as opposed to a real
+# error from the remote command, which surfaces as the command's own exit code.
+_TRANSIENT_RCS = frozenset({255, 12, 23, 30, 35})
+
+
+def _run_retry(cmd: list[str], attempts: int = 3, delay_s: int = 15,
+               **kw) -> subprocess.CompletedProcess:
+    """`_run` with bounded retries on transport failures.
+
+    Staging goes over a jump host (`ProxyCommand` in ~/.ssh/config), which drops
+    connections often enough to abort otherwise-fine runs: an rsync or ssh
+    returning 255 mid-stage kills a multi-hour synth/sim flow before Vivado is
+    even reached. Retry only the transport-level codes — a genuine non-zero exit
+    from the remote command is re-raised on the first attempt so real errors are
+    not masked or silently repeated.
+    """
+    kw.setdefault("check", True)
+    last: subprocess.CalledProcessError | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return _run(cmd, **kw)
+        except subprocess.CalledProcessError as e:
+            if e.returncode not in _TRANSIENT_RCS or attempt == attempts:
+                raise
+            last = e
+            print(f"[run_remote_sim] transport failure (rc={e.returncode}) on "
+                  f"attempt {attempt}/{attempts}; retrying in {delay_s}s")
+            time.sleep(delay_s)
+    raise last  # unreachable, kept for type-checkers
+
+
 def detect_top(run_dir: Path, override: str | None) -> str:
     if override:
         return override
@@ -94,11 +126,11 @@ def ensure_resources(server: str, remote_root: str) -> None:
     print("[run_remote_sim] pushing GPC primitives to src/rtl_resources/")
     _ssh(server, f"mkdir -p {shlex.quote(remote_root)}/src/rtl_resources",
          check=True)
-    _run([
+    _run_retry([
         "rsync", "-a", "--ignore-existing",
         f"{VERSAL_RTL_DIR}/",
         f"{server}:{remote_root}/src/rtl_resources/",
-    ], check=True)
+    ])
 
 
 def wipe_slot(server: str, remote_root: str) -> None:
@@ -108,19 +140,19 @@ def wipe_slot(server: str, remote_root: str) -> None:
         "src/rtl_tb/*.sv src/rtl_tb/*.v && "
         "rm -rf testvectors && mkdir -p testvectors"
     )
-    _ssh(server, cmd, check=True)
+    _run_retry(["ssh", server, cmd])
 
 
 def stage_rtl(server: str, remote_root: str, run_dir: Path) -> None:
     """Push RTL_generated/*.sv (minus *_tb.sv) to src/rtl/."""
-    _run([
+    _run_retry([
         "rsync", "-a",
         "--include=*.sv", "--include=*.v",
         "--exclude=*_tb.sv", "--exclude=*_tb.v",
         "--exclude=*",
         f"{run_dir}/RTL_generated/",
         f"{server}:{remote_root}/src/rtl/",
-    ], check=True)
+    ])
 
 
 def stage_testbench(server: str, remote_root: str, run_dir: Path,
@@ -149,15 +181,16 @@ def stage_testbench(server: str, remote_root: str, run_dir: Path,
 
 
 def stage_testvectors(server: str, remote_root: str, run_dir: Path) -> None:
-    _run([
+    _run_retry([
         "rsync", "-a", "--delete",
         f"{run_dir}/testvectors/",
         f"{server}:{remote_root}/testvectors/",
-    ], check=True)
+    ])
 
 
 def run_sim(server: str, remote_root: str, top: str, pull_to: Path,
-            poll_interval_s: int = 30) -> tuple[int, str]:
+            poll_interval_s: int = 30, launch_timeout_s: int = 120,
+            startup_grace_s: int = 300) -> tuple[int, str]:
     """Invoke ./scripts/sim.sh <top> on the server. Return (exit_code, log_text).
 
     The sim is fully detached from the launching SSH session via setsid + nohup
@@ -189,19 +222,36 @@ def run_sim(server: str, remote_root: str, top: str, pull_to: Path,
         f"</dev/null >/dev/null 2>&1 &"
     )
     print(f"[run_remote_sim] launching detached sim on {server}")
-    _ssh(server, launch_cmd, check=True)
+    # The remote job is fully detached (setsid + nohup + fds on /dev/null), so
+    # this ssh should return immediately. It does not always: the launch channel
+    # can wedge and block forever even though the remote sim ran to completion
+    # (observed hanging 80+ minutes on a sim that finished in 10). Completion is
+    # detected by polling the exit marker, so a wedged launch channel carries no
+    # information — bound it and move on. subprocess kills the ssh on timeout.
+    try:
+        _run(["ssh", "-n",
+              "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3",
+              "-o", "ConnectTimeout=30",
+              server, launch_cmd],
+             check=True, timeout=launch_timeout_s)
+    except subprocess.TimeoutExpired:
+        print(f"[run_remote_sim] launch ssh did not return within "
+              f"{launch_timeout_s}s; the job is detached, continuing to poll")
 
     # Poll for the exit marker. Each poll is a short, idle-timeout-resistant SSH
     # call; we don't keep a long-lived connection open during the sim.
     print(f"[run_remote_sim] polling for {sim_exit_remote} every {poll_interval_s}s")
     sim_exit: int | None = None
+    started = time.monotonic()
+    saw_log = False
     while sim_exit is None:
         time.sleep(poll_interval_s)
         proc = subprocess.run(
-            ["ssh",
+            ["ssh", "-n",
              "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3",
              "-o", "ConnectTimeout=30",
              server,
+             f"test -f {shlex.quote(sim_log_remote)} && echo LOG; "
              f"test -f {shlex.quote(sim_exit_remote)} && cat {shlex.quote(sim_exit_remote)} || echo NOT_DONE"],
             capture_output=True, text=True,
         )
@@ -210,7 +260,18 @@ def run_sim(server: str, remote_root: str, top: str, pull_to: Path,
                   f"stderr={proc.stderr.strip()!r}); retrying")
             continue
         out = proc.stdout.strip()
+        if "LOG" in out.split():
+            saw_log = True
+        out = out.replace("LOG", "").strip()
         if out == "NOT_DONE" or out == "":
+            # Guard against polling forever when the launch never took: if the
+            # remote sim log has not even appeared within the grace period, the
+            # job is not running and no marker will ever show up.
+            if not saw_log and (time.monotonic() - started) > startup_grace_s:
+                raise RuntimeError(
+                    f"remote sim never started: {sim_log_remote} absent after "
+                    f"{startup_grace_s}s (launch failed?)"
+                )
             continue
         try:
             sim_exit = int(out)
@@ -269,17 +330,27 @@ def pull_back(server: str, remote_root: str, top: str, pull_to: Path,
 
 
 PASS_RE = re.compile(r"PASS All\s+\d+")
-FAIL_RE = re.compile(r"FAILED:\s*(\d+)\s*/\s*(\d+)\s*checks passed")
+# Two distinct FAILED formats are emitted across the generators:
+#   const_mult / cmultbank : "FAILED: <passed> / <total> checks passed"
+#   butterfly / NTT / INTT : "FAILED: <failed> out of <total> testvectors failed"
+# Only the first was matched before, so butterfly and NTT failures fell through
+# to the generic WRONG grep and were reported with a meaningless count.
+FAIL_CHECKS_RE = re.compile(r"FAILED:\s*(\d+)\s*/\s*(\d+)\s*checks passed")
+FAIL_VECTORS_RE = re.compile(r"FAILED:\s*(\d+)\s*out of\s*(\d+)\s*testvectors failed")
 WRONG_RE = re.compile(r"WRONG", re.IGNORECASE)
 NUM_RE = re.compile(r"PASS All\s+(\d+)")
 
 
 def parse_verdict(top: str, log: str) -> tuple[str, str]:
     """Return (verdict, summary). verdict ∈ {'PASS', 'FAIL', 'UNKNOWN'}."""
-    m_fail = FAIL_RE.search(log)
+    m_fail = FAIL_CHECKS_RE.search(log)
     if m_fail:
         passed, total = int(m_fail.group(1)), int(m_fail.group(2))
         return "FAIL", f"{top}: FAIL ({total - passed}/{total} checks failed)"
+    m_fail = FAIL_VECTORS_RE.search(log)
+    if m_fail:
+        failed, total = int(m_fail.group(1)), int(m_fail.group(2))
+        return "FAIL", f"{top}: FAIL ({failed}/{total} testvectors failed)"
     if PASS_RE.search(log) and "SUCCESS" in log:
         m_n = NUM_RE.search(log)
         n = m_n.group(1) if m_n else "?"

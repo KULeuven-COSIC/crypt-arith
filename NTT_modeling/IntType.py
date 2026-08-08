@@ -176,21 +176,73 @@ class IntType:
 
 
 def loadBoundsJson(path: str) -> list[IntType]:
-    '''Load a list of IntType bounds from a JSON file written by
-    versal_arith.rtl_gen.const_mult.Cmultbank_RTL_gen.
+    '''Load per-port IntType bounds from a constant-multiplier bank's side-car.
 
-    The JSON is a list of objects with at least `minValue` and `maxValue`
-    fields per entry; this helper builds `IntType(minValue, maxValue, 0)`
-    for each one. The list is returned in the same natural-index order the
-    bank wrote it (entry i ↔ cmult P_i ↔ NTT natural-input x[i]).
+    Returns the bounds in the order the bank wrote them
+    (entry i ↔ cmult P_i ↔ NTT natural-input x[i]), ready to hand to
+    `FullyPipelinedNTT.getInputsNatural`.
 
     Typical use:
 
         from NTT_modeling.IntType import loadBoundsJson
         bounds = loadBoundsJson('work/<scenario>/cmultbank/output_bounds.json')
         ntt.getInputsNatural(bounds)
+
+    Two on-disk formats are accepted.
+
+    **Schema 2** — a dict with `schema: 2` and an `entries` list, written by
+    `versal_arith.rtl_gen.const_mult_op.ConstMultBank_RTL_gen` from the model's
+    own `IntType`s. Bounds are used verbatim, including `zeroLsbs`, because the
+    declared port width *is* the interval-derived width by construction.
+
+    **Schema 1** — a bare list, written by the legacy
+    `rtl_gen.const_mult.Cmultbank_RTL_gen`, which sizes ports from `width_a`
+    alone via `_output_width`. That formula computes `max_abs.bit_length() + 1`
+    where `IntType.bitWidth` computes
+    `max((-min-1).bit_length(), max.bit_length()) + 1`; the two differ by one
+    exactly when `-prod_min` is a power of two, i.e. for a signed input times a
+    positive power-of-two constant. A 25288-combination sweep found the
+    generator is **never narrower** and wider on 783 of them.
+
+    Returning the interval-derived width for a schema-1 file would under-size a
+    downstream consumer's input port by one bit against the bank's actual
+    driver, so the bound is widened on its negative edge until it matches the
+    declared `bitWidth`. `maxValue` is left tight, keeping downstream
+    propagation as sharp as the data allows. Schema-2 files need none of this.
     '''
     import json
     with open(path) as f:
         data = json.load(f)
-    return [IntType(d['minValue'], d['maxValue'], 0) for d in data]
+
+    if isinstance(data, dict):
+        schema = data.get('schema')
+        if schema != 2:
+            raise ValueError(
+                f'loadBoundsJson({path!r}): unrecognised schema {schema!r} '
+                f'(expected 2, or a bare list for the legacy format)'
+            )
+        return [
+            IntType(d['minValue'], d['maxValue'], d.get('zeroLsbs', 0))
+            for d in data['entries']
+        ]
+
+    out: list[IntType] = []
+    for d in data:
+        bound = IntType(d['minValue'], d['maxValue'], 0)
+        declared = d.get('bitWidth')
+        if declared is not None and declared > bound.bitWidth:
+            if bound.isSigned:
+                # Signed bitWidth is max(negWidth, posWidth) + 1, so pushing the
+                # negative edge out to -2^(declared-1) forces exactly `declared`
+                # and leaves maxValue untouched.
+                bound = IntType(-(1 << (declared - 1)), d['maxValue'], 0)
+            else:
+                bound = IntType(d['minValue'], (1 << declared) - 1, 0)
+            if bound.bitWidth != declared:
+                raise ValueError(
+                    f'loadBoundsJson({path!r}): could not widen entry '
+                    f'{d.get("idx")} to declared bitWidth {declared} '
+                    f'(got {bound.bitWidth})'
+                )
+        out.append(bound)
+    return out

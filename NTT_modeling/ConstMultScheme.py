@@ -108,6 +108,11 @@ class NafConstMult(ConstMultScheme):
         self.liftBeamWidth = liftBeamWidth
         self.countInverters = countInverters
         self.verbose = verbose
+        # `_liftConstant` is called by _buildTerms, propagateBound, strategy,
+        # areaCost and getOperatorInterface. With a modulus set each call is a
+        # fresh beam search, so a 64-entry bank would repeat it hundreds of
+        # times. Memoise per instance; invalidated by `setConstant`.
+        self._liftCache: tuple[int, list[tuple[int, int]]] | None = None
 
     # ------------------------------------------------------------------
     # The constant
@@ -127,7 +132,21 @@ class NafConstMult(ConstMultScheme):
         target-first search with a beam fallback — never
         `versal_arith.power_writer.reduce_mod_q_min_powers_lift`. The result is
         baked into the spec, so the generator never lifts anything itself.
+
+        Memoised: with a modulus set this runs a search, and the callers around
+        it (terms, bound, strategy, area, spec) would otherwise repeat it.
         '''
+        if self._liftCache is not None:
+            return self._liftCache
+        self._liftCache = self._computeLift()
+        return self._liftCache
+
+    def setConstant(self, constant: int | list[tuple[int, int]]) -> None:
+        '''Replace the constant, discarding the memoised lift.'''
+        self.constant = constant
+        self._liftCache = None
+
+    def _computeLift(self) -> tuple[int, list[tuple[int, int]]]:
         if isinstance(self.constant, list):
             naf = [tuple(t) for t in self.constant]
             for t in naf:
@@ -260,6 +279,60 @@ class NafConstMult(ConstMultScheme):
                 f'{self.name}: bit-heap bound {heapBound} does not contain the '
                 f'product bound {exact}'
             )
+
+    def checkHeapArithmetic(self, testSize: int = 64,
+                            seed: int | None = None) -> None:
+        '''Check the bit heap itself computes `A * C`, without a simulator.
+
+        `propagateValue` and the local testvector sanity check both run through
+        the term list, so they agree with each other by construction and cannot
+        catch a mistake in how terms become heap bits. This interprets the heap
+        descriptor the RTL is literally wired from — every bit is `A[i]`,
+        `~A[i]`, `1'b1` or `1'b0`, weighted by its column — and confirms the sum
+        equals `A * C` modulo the output width.
+
+        That covers the Baugh-Wooley correction bits, which is where signed
+        inputs and negative constants are easy to get wrong, and it is the
+        strongest statement available about the emitted hardware short of
+        running a simulation.
+        '''
+        from rtl_gen.heap_terms import buildHeapDescriptors
+
+        rng = _random.Random(seed) if seed is not None else _random
+        lifted, _ = self._liftConstant()
+        outWidth = self.propagateBound().bitWidth
+        terms, _, _ = self._buildTerms()
+        _, assignDesc, _, _ = buildHeapDescriptors(terms, outWidth,
+                                                   f'{self.outPortName.lower()}_')
+
+        aWidth = self.aIn.bitWidth
+        aMask = (1 << aWidth) - 1
+        outMask = (1 << outWidth) - 1
+
+        for _ in range(testSize):
+            value = rng.randint(self.aIn.minValue, self.aIn.maxValue)
+            raw = value & aMask
+            total = 0
+            for entry in assignDesc:
+                column = entry[0]
+                for sigName, sigIndex, negated, isConst in entry[1:]:
+                    if isConst:
+                        bit = 1
+                    elif sigName is None:
+                        bit = 0
+                    else:
+                        index = sigIndex if sigIndex not in (None, -1) else 0
+                        bit = (raw >> index) & 1
+                        if negated:
+                            bit ^= 1
+                    total += bit << column
+            expected = (value * lifted) & outMask
+            if (total & outMask) != expected:
+                raise AssertionError(
+                    f'{self.name}: bit heap computes {total & outMask:#x} for '
+                    f'A={value}, expected {expected:#x} '
+                    f'(= {value} * {lifted} mod 2^{outWidth})'
+                )
 
     # ------------------------------------------------------------------
     # Implementation strategy, latency and area

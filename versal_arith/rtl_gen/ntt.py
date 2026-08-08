@@ -331,12 +331,21 @@ def _emit_top_testbench(spec: NTTOperatorSpec, total_latency: int, test_size: in
     lines.append(f"        #(`CLK_P*{total_latency});")
     lines.append("        #1;")
     lines.append("        for (j = 0; j < `TS_SIZE; j = j + 1) begin")
-    lines.append("            if (y_out_packed === y_out_ts[j]) begin")
+    lines.append("            // `===` alone is NOT X-safe: X === X is true, so a run whose")
+    lines.append("            // $readmemh silently failed (all-X inputs, all-X goldens, all-X")
+    lines.append("            // DUT outputs) would score a full PASS having checked nothing.")
+    lines.append("            // Guard on $isunknown so any X anywhere is a failure.")
+    lines.append("            if (!$isunknown(y_out_packed) && !$isunknown(y_out_ts[j])")
+    lines.append("                && y_out_packed === y_out_ts[j]) begin")
     lines.append("                $display(\"Testvector-%d CORRECT!\", j);")
     lines.append("                correct_cnt = correct_cnt + 1;")
     lines.append("            end else begin")
     lines.append("                $display(\"=================================================================================\");")
     lines.append("                $display(\"Testvector-%d WRONG\", j);")
+    lines.append("                if ($isunknown(y_out_ts[j]))")
+    lines.append("                    $display(\"  golden is X — testvectors not loaded (check the $readmemh path)\");")
+    lines.append("                if ($isunknown(y_out_packed))")
+    lines.append("                    $display(\"  DUT output is X — undriven logic or X-valued inputs\");")
     for i in range(n):
         hi = out_offsets[i + 1] - 1
         lo = out_offsets[i]

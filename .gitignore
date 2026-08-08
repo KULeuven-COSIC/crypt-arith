@@ -81,6 +81,10 @@ versal_arith/versal_arith_generated/
 # Stray top-level run logs (sometimes dropped next to work/ by the build scripts)
 /*.log
 
+# Zipped run directories. These are transfer artifacts of work/ (already
+# ignored above) — regenerable, tens of MB each, and incompressible by git.
+*.zip
+
 # =============================================================================
 # Vivado / simulator junk
 # =============================================================================

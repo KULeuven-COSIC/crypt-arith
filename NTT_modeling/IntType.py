@@ -179,10 +179,25 @@ def loadBoundsJson(path: str) -> list[IntType]:
     '''Load a list of IntType bounds from a JSON file written by
     versal_arith.rtl_gen.const_mult.Cmultbank_RTL_gen.
 
-    The JSON is a list of objects with at least `minValue` and `maxValue`
-    fields per entry; this helper builds `IntType(minValue, maxValue, 0)`
-    for each one. The list is returned in the same natural-index order the
-    bank wrote it (entry i ↔ cmult P_i ↔ NTT natural-input x[i]).
+    The JSON is a list of objects with `minValue` / `maxValue` and the
+    generator's declared port `bitWidth` per entry. The list is returned in
+    the same natural-index order the bank wrote it (entry i ↔ cmult P_i ↔
+    NTT natural-input x[i]).
+
+    **The declared `bitWidth` wins over the interval.** The generator sizes
+    every cmult output for the worst case `width_a + maxPow + 1`, which is
+    tight for a negative constant but one bit conservative for a positive one:
+    with a signed input, `A ∈ [-2^(W-1), 2^(W-1)-1]` is asymmetric, so the most
+    negative input times a negative constant reaches `+2^(W-1+k)` and needs
+    that extra bit, while a positive constant never does. The resulting port is
+    therefore sometimes one bit wider than `[minValue, maxValue]` implies (13
+    of 64 ports on the n=64 post-twist bank).
+
+    Returning the interval-derived width would under-size a downstream
+    consumer's input port by one bit against the bank's actual driver, so the
+    bound is widened on its negative edge until `bitWidth` matches what the
+    RTL declares. `maxValue` is left tight, keeping downstream bound
+    propagation as sharp as the data allows.
 
     Typical use:
 
@@ -193,4 +208,24 @@ def loadBoundsJson(path: str) -> list[IntType]:
     import json
     with open(path) as f:
         data = json.load(f)
-    return [IntType(d['minValue'], d['maxValue'], 0) for d in data]
+
+    out: list[IntType] = []
+    for d in data:
+        bound = IntType(d['minValue'], d['maxValue'], 0)
+        declared = d.get('bitWidth')
+        if declared is not None and declared > bound.bitWidth:
+            if bound.isSigned:
+                # signed bitWidth = max(negWidth, posWidth) + 1, so pushing the
+                # negative edge out to -2^(declared-1) forces exactly `declared`
+                # and leaves maxValue untouched.
+                bound = IntType(-(1 << (declared - 1)), d['maxValue'], 0)
+            else:
+                bound = IntType(d['minValue'], (1 << declared) - 1, 0)
+            if bound.bitWidth != declared:
+                raise ValueError(
+                    f"loadBoundsJson({path!r}): could not widen entry "
+                    f"{d.get('idx')} to declared bitWidth {declared} "
+                    f"(got {bound.bitWidth})"
+                )
+        out.append(bound)
+    return out

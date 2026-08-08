@@ -45,8 +45,18 @@ just want to feed it to the generator, point ``--file`` at it and skip
 
 Sheets supported by ``--sheet``:
 
-  PRE_TWIST     PRETWIST_FACTORS in column A; "Most simple bin rep" NAF in B
-  POST_TWIST    POST TWIST FACTORS in A; simple NAF in B
+  PRE_TWIST     twiddles.xlsx:    PRETWIST_FACTORS in A; "Most simple bin rep" NAF in B
+  POST_TWIST    twiddles.xlsx:    POST TWIST FACTORS in A; simple NAF in B
+  PRETWIST      NewTwiddles.xlsx: single raw mod-q column A, no header row
+  POSTTWIST     NewTwiddles.xlsx: single raw mod-q column A, header row 1
+
+The two NewTwiddles.xlsx sheets carry **no** pre-lifted NAF column, so they are
+raw-only and must be paired with ``--modulus`` to get sparse constants::
+
+    python scripts/build_bank.py \\
+        --scenario fourstep64_pretwist \\
+        --xlsx NewTwiddles.xlsx --sheet PRETWIST \\
+        --width-a 24 --modulus 18446744069414584321
 
 NAF modulus lifting is **optional** and split across two layers:
 
@@ -152,11 +162,49 @@ def constants_from_xlsx(
                 out.append(naf_str_to_int(str(cell)))
         return out
 
+    if sheet in ("PRETWIST", "POSTTWIST"):
+        # NewTwiddles.xlsx layout: a single column A of raw mod-q residues,
+        # stored as strings, with NO pre-lifted NAF column. Whether row 1 is a
+        # header varies per sheet (PRETWIST starts at row 1 with the datum
+        # "1" = psi^0; POSTTWIST has a "POST TWIST FACTORS" title), so detect
+        # it by asking whether the cell parses as an integer.
+        #
+        # Because there is no lifted column, these constants MUST be passed to
+        # the generator with --modulus so it does the NAF lift internally.
+        if column != "raw":
+            raise SystemExit(
+                f"sheet {sheet!r} has only a single raw column A (no lifted "
+                f"'Most simple bin rep'), so --column {column!r} does not "
+                f"apply. Re-run with --column raw --modulus <q> so the RTL "
+                f"generator performs the NAF lift."
+            )
+        out: list[int] = []
+        for (cell,) in ws.iter_rows(min_row=1, max_col=1, values_only=True):
+            if cell is None or str(cell).strip() == "":
+                # Trailing blanks end the column; blanks before any data are a
+                # layout we don't expect, so stop either way.
+                if out:
+                    break
+                continue
+            text = str(cell).strip()
+            try:
+                out.append(int(text))
+            except ValueError:
+                if out:
+                    raise SystemExit(
+                        f"{sheet}: non-integer cell {text!r} after "
+                        f"{len(out)} constants"
+                    )
+                # Header row — skip it and keep going.
+                continue
+        return out
+
     raise SystemExit(
-        f"sheet {sheet!r} not supported by build_bank.py. Only PRE_TWIST and "
-        "POST_TWIST are supported (per-stage butterfly twiddles belong with "
-        "build_butterfly.py, not in a constant-multiplier bank). Extract any "
-        "other constants manually and re-run with --file."
+        f"sheet {sheet!r} not supported by build_bank.py. Supported sheets: "
+        "PRE_TWIST / POST_TWIST (twiddles.xlsx layout) and PRETWIST / "
+        "POSTTWIST (NewTwiddles.xlsx layout). Per-stage butterfly twiddles "
+        "belong with build_butterfly.py, not in a constant-multiplier bank. "
+        "Extract any other constants manually and re-run with --file."
     )
 
 
@@ -233,17 +281,23 @@ def main() -> None:
 
     # Where the constants come from
     src = p.add_mutually_exclusive_group()
-    src.add_argument("--sheet", choices=("PRE_TWIST", "POST_TWIST"),
-                     help="xlsx sheet name (PRE_TWIST or POST_TWIST)")
+    src.add_argument("--sheet",
+                     choices=("PRE_TWIST", "POST_TWIST", "PRETWIST", "POSTTWIST"),
+                     help="xlsx sheet name. PRE_TWIST / POST_TWIST use the "
+                          "twiddles.xlsx layout (header row, lifted NAF in "
+                          "column B); PRETWIST / POSTTWIST use the "
+                          "NewTwiddles.xlsx layout (single raw column A)")
     src.add_argument("--file",
                      help="path to a plain integer-per-line file (skips xlsx)")
     p.add_argument("--xlsx", default=str(DEFAULT_XLSX),
-                   help=f"path to twiddles.xlsx (default: {DEFAULT_XLSX})")
-    p.add_argument("--column", choices=("simple", "raw"), default="simple",
+                   help=f"path to the twiddle workbook (default: {DEFAULT_XLSX})")
+    p.add_argument("--column", choices=("simple", "raw"), default=None,
                    help="for PRE_TWIST/POST_TWIST: 'simple' = column B "
-                        "(already-lifted, sparse NAF — default), 'raw' = "
-                        "column A (original mod-q integer; pair with --modulus "
-                        "to lift inside the RTL generator)")
+                        "(already-lifted, sparse NAF — the default for those "
+                        "sheets), 'raw' = column A (original mod-q integer; "
+                        "pair with --modulus to lift inside the RTL "
+                        "generator). PRETWIST/POSTTWIST are raw-only and "
+                        "default accordingly.")
 
     # Versal generator parameters (forwarded to cli.py)
     p.add_argument("--width-a", type=int, default=24,
@@ -313,11 +367,20 @@ def main() -> None:
         xlsx_path = Path(args.xlsx).resolve()
         if not xlsx_path.is_file():
             raise SystemExit(f"--xlsx not found: {xlsx_path}")
+        # Per-sheet default: the twiddles.xlsx sheets carry a pre-lifted NAF in
+        # column B, the NewTwiddles.xlsx ones only a raw residue in column A.
+        column = args.column
+        if column is None:
+            column = "raw" if args.sheet in ("PRETWIST", "POSTTWIST") else "simple"
         constants = constants_from_xlsx(
-            xlsx_path, args.sheet, args.column
+            xlsx_path, args.sheet, column
         )
         print(f"[build_bank] extracted {len(constants)} constants from "
-              f"{xlsx_path}!{args.sheet} (column={args.column})")
+              f"{xlsx_path}!{args.sheet} (column={column})")
+        if column == "raw" and args.modulus is None:
+            print("[build_bank] WARNING: raw mod-q residues with no --modulus; "
+                  "the generator will NAF-decompose them verbatim (dense, "
+                  "expensive). Pass --modulus 18446744069414584321 to lift.")
     else:
         raise SystemExit("must pass either --sheet or --file")
 

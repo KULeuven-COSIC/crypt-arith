@@ -604,9 +604,9 @@ work/foo/
 
 | Flag | Description |
 |---|---|
-| `--sheet <name>` | xlsx sheet name. Supported: `PRE_TWIST` or `POST_TWIST`. (Per-stage butterfly twiddles aren't supported here — use `build_butterfly.py` for those.) |
-| `--xlsx <path>` | Path to the workbook (default: `twiddles.xlsx`). |
-| `--column simple\|raw` | For `PRE_TWIST` / `POST_TWIST`: `simple` (default) reads column B (already-NAF-lifted "Most simple bin rep"); `raw` reads column A (original mod-q residue, pair with `--modulus q` to lift). |
+| `--sheet <name>` | xlsx sheet name. Supported: `PRE_TWIST` / `POST_TWIST` (the `twiddles.xlsx` layout — header row, raw mod-q residue in column A, already-NAF-lifted "Most simple bin rep" in column B) and `PRETWIST` / `POSTTWIST` (the `NewTwiddles.xlsx` layout — a single raw mod-q column A, header row auto-detected, **no** lifted column). (Per-stage butterfly twiddles aren't supported here — use `build_butterfly.py` for those.) |
+| `--xlsx <path>` | Path to the workbook (default: `twiddles.xlsx`). Pass `NewTwiddles.xlsx` for the `PRETWIST` / `POSTTWIST` sheets. |
+| `--column simple\|raw` | For `PRE_TWIST` / `POST_TWIST`: `simple` (default) reads column B (already-NAF-lifted "Most simple bin rep"); `raw` reads column A (original mod-q residue, pair with `--modulus q` to lift). `PRETWIST` / `POSTTWIST` have only a raw column, so they default to `raw` and reject `simple` — **always pair them with `--modulus 18446744069414584321`**, or the generator NAF-decomposes 64-bit residues verbatim (the script warns if you forget). |
 | `--file <path>` | Plain integer-per-line file. Bypasses xlsx parsing entirely. |
 
 #### Versal generator parameters (forwarded to `cli.py`)

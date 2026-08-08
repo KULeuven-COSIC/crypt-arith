@@ -52,7 +52,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 from run_remote_sim import (  # noqa: E402
     DEFAULT_SERVER, DEFAULT_REMOTE_ROOT,
     EXIT_PASS, EXIT_FAIL, EXIT_TOOLING,
-    _run, _ssh, detect_top, ensure_resources,
+    _run, _run_retry, _ssh, detect_top, ensure_resources,
 )
 
 
@@ -76,15 +76,20 @@ def wipe_synth_slot(server: str, remote_root: str) -> None:
 
 def stage_rtl(server: str, remote_root: str, run_dir: Path) -> None:
     """Push RTL_generated/*.sv (minus *_tb.sv) to src/rtl/. The TB is
-    sim-only; OOC synth ignores it (and would fail to read it cleanly)."""
-    _run([
+    sim-only; OOC synth ignores it (and would fail to read it cleanly).
+
+    Filter order matters: rsync applies the FIRST matching rule, so the
+    `*_tb.sv` excludes must precede the `*.sv` includes — otherwise the
+    testbench is copied into src/rtl/ despite the exclude and gets globbed
+    into the synthesis source set."""
+    _run_retry([
         "rsync", "-a",
-        "--include=*.sv", "--include=*.v",
         "--exclude=*_tb.sv", "--exclude=*_tb.v",
+        "--include=*.sv", "--include=*.v",
         "--exclude=*",
         f"{run_dir}/RTL_generated/",
         f"{server}:{remote_root}/src/rtl/",
-    ], check=True)
+    ])
 
 
 # ---------------------------------------------------------------------------

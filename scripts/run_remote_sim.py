@@ -144,11 +144,20 @@ def wipe_slot(server: str, remote_root: str) -> None:
 
 
 def stage_rtl(server: str, remote_root: str, run_dir: Path) -> None:
-    """Push RTL_generated/*.sv (minus *_tb.sv) to src/rtl/."""
+    """Push RTL_generated/*.sv (minus *_tb.sv) to src/rtl/.
+
+    Filter order matters: rsync applies the FIRST matching rule, so the
+    `*_tb.sv` excludes must precede the `*.sv` includes. With the includes
+    first, the testbench also landed in src/rtl/ and xvlog compiled two
+    definitions of `<top>_tb` — the unpatched one (5-deep `$readmemh` paths
+    that resolve to nothing server-side) and the patched one from
+    src/rtl_tb/. Which one survived depended on `find` ordering inside
+    sim.sh; if the unpatched copy had won, every testvector array would be
+    X and the testbench would have silently "passed"."""
     _run_retry([
         "rsync", "-a",
-        "--include=*.sv", "--include=*.v",
         "--exclude=*_tb.sv", "--exclude=*_tb.v",
+        "--include=*.sv", "--include=*.v",
         "--exclude=*",
         f"{run_dir}/RTL_generated/",
         f"{server}:{remote_root}/src/rtl/",

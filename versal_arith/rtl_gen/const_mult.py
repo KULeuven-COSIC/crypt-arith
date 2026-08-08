@@ -560,6 +560,52 @@ def _gen_single_cmult(width_a: int, constant: int, pipeline_stages: int, test_si
     return mod_name, rtl, comp_stages, out_w
 
 
+def _consolidate_bank_artifacts(rtl_dir: str, bank_module_name: str,
+                                mod_names: list[str]) -> None:
+    """Merge the per-constant artifacts into two consolidated SV files.
+
+    Each constant contributes one `<Cmult>.sv` wrapper and — only when its
+    bit-heap needed the compressor strategy (max column height >= 3) — one
+    `<Cmult>_cmp.sv`. For a 64-wide bank that is up to 128 tiny files, which
+    is slow to rsync and noisy to browse. Concatenate them the same way
+    `rtl_gen.ntt._consolidate_butterfly_artifacts` does for butterflies:
+
+      - `<bank>_cmults.sv`      — every Cmult wrapper module
+      - `<bank>_compressors.sv` — every compressor module (omitted when the
+                                  bank has none, e.g. every constant lifted
+                                  to <= 2 NAF terms)
+
+    SV permits multiple modules per file; Vivado/xsim resolve them by module
+    name. The XDCs stay split — they carry LUTNM placement keyed on specific
+    compressor module instances.
+    """
+    wrappers: list[str] = []
+    compressors: list[str] = []
+    for mod in mod_names:
+        wrapper_path = os.path.join(rtl_dir, f"{mod}.sv")
+        cmp_path     = os.path.join(rtl_dir, f"{mod}_cmp.sv")
+        if os.path.isfile(cmp_path):
+            with open(cmp_path, "r", encoding="utf-8") as f:
+                compressors.append(f"// ===== {mod}_cmp =====\n{f.read()}")
+            os.remove(cmp_path)
+        if os.path.isfile(wrapper_path):
+            with open(wrapper_path, "r", encoding="utf-8") as f:
+                wrappers.append(f"// ===== {mod} =====\n{f.read()}")
+            os.remove(wrapper_path)
+
+    if wrappers:
+        with open(os.path.join(rtl_dir, f"{bank_module_name}_cmults.sv"),
+                  "w", encoding="utf-8") as f:
+            f.write("\n".join(wrappers))
+    if compressors:
+        with open(os.path.join(rtl_dir, f"{bank_module_name}_compressors.sv"),
+                  "w", encoding="utf-8") as f:
+            f.write("\n".join(compressors))
+    print(f"  Consolidated {len(wrappers)} cmult + {len(compressors)} compressor "
+          f"module(s) into {bank_module_name}_cmults.sv"
+          + (f" + {bank_module_name}_compressors.sv" if compressors else ""))
+
+
 def Cmultbank_RTL_gen(
     txt_file_name: str,
     width_a: int = 24,
@@ -656,6 +702,12 @@ def Cmultbank_RTL_gen(
 
         if i % 16 == 0:
             print(f"  Generated {i}/{n_mults}: {mod_name} ({n_terms} NAF terms, {comp_stages} pipe stages)")
+
+    # Fold the per-constant wrappers + compressors into two files. Done here,
+    # before the top wrapper and testbench are written, so those are never
+    # candidates for consolidation.
+    _consolidate_bank_artifacts("RTL_generated", bank_module_name,
+                                [m[0] for m in module_names])
 
     # Uniform latency = max of (deepest compressor, user-requested pipeline_stages, 1)
     max_comp_latency = max_latency

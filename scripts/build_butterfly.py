@@ -138,7 +138,7 @@ def resolve_twiddle(
     if args.compute_twiddles:
         # Sage import deferred until we know we need it — the import is heavy
         # and unnecessary when the user is loading from xlsx.
-        from operator_modeling.ntt.NTT import calculateNttTwiddles, calculateInttTwiddles  # noqa: E402
+        from operator_modeling.ntt.twiddles import calculateNttTwiddles, calculateInttTwiddles  # noqa: E402
         twiddleFn = calculateInttTwiddles if args.inverse else calculateNttTwiddles
         twiddles = twiddleFn(
             modulus=GOLDILOCKS_Q, n=args.n, butterflyType=args.butterfly_type,
@@ -157,7 +157,7 @@ def resolve_twiddle(
         return list(naf), src
 
     # xlsx path
-    from operator_modeling.ntt.NTT import loadTwiddlesFromXlsx  # noqa: E402
+    from operator_modeling.ntt.twiddles import loadTwiddlesFromXlsx  # noqa: E402
     xlsx_path = Path(args.twiddles_xlsx).resolve()
     if not xlsx_path.is_file():
         raise SystemExit(f"--twiddles-xlsx not found: {xlsx_path}")

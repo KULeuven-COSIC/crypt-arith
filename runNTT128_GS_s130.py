@@ -62,7 +62,9 @@ def main() -> int:
     sys.path.insert(0, str(PROJECT_ROOT))
     from operator_modeling.core.IntType import IntType
     from operator_modeling.ntt.ButterflyScheme import GoldilocksSlice64
-    from operator_modeling.ntt.NTT import FullyPipelinedNTT, calculateNttTwiddles, verifyNtt
+    from operator_modeling.ntt.NTT import FullyPipelinedNTT
+    from operator_modeling.ntt.twiddles import calculateNttTwiddles
+    from operator_modeling.ntt.verification import verifyNtt
 
     q, n = 2**64 - 2**32 + 1, 128
     L    = int(log2(n))

@@ -71,10 +71,8 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 from operator_modeling.core.IntType import IntType  # noqa: E402
 from operator_modeling.ntt.ButterflyScheme import GoldilocksSlice64  # noqa: E402
-from operator_modeling.ntt.NTT import (  # noqa: E402
-    FullyPipelinedNTT, FullyPipelinedINTT,
-    calculateNttTwiddles, calculateInttTwiddles, loadTwiddlesFromXlsx,
-)
+from operator_modeling.ntt.NTT import FullyPipelinedNTT, FullyPipelinedINTT  # noqa: E402
+from operator_modeling.ntt.twiddles import calculateNttTwiddles, calculateInttTwiddles, loadTwiddlesFromXlsx  # noqa: E402
 
 # Reuse the input-bound parser from build_butterfly.py.
 import build_butterfly as bb  # noqa: E402

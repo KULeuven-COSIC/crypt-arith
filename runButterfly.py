@@ -1,11 +1,9 @@
 from math import log2
 from operator_modeling.ntt.ButterflyScheme import GoldilocksSlice64
 from operator_modeling.core.IntType import IntType
-from operator_modeling.ntt.NTT import (
-    FullyPipelinedNTT, FullyPipelinedINTT,
-    calculateNttTwiddles, calculateInttTwiddles,
-    verifyNtt, verifyIntt,
-)
+from operator_modeling.ntt.NTT import FullyPipelinedNTT, FullyPipelinedINTT
+from operator_modeling.ntt.twiddles import calculateNttTwiddles, calculateInttTwiddles
+from operator_modeling.ntt.verification import verifyNtt, verifyIntt
 
 
 if __name__ == '__main__':

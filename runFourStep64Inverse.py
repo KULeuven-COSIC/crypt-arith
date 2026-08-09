@@ -153,7 +153,7 @@ def verify_composed_negacyclic_inverse(inst, bounds: list, constants: list[int],
     constants, and compare mod q against the Sage negacyclic inverse *with*
     divideByN=True. Mirror of the forward harness's composed check.
     """
-    from operator_modeling.ntt.NTT import referenceIntt
+    from operator_modeling.ntt.verification import referenceIntt
 
     random.seed(SEED)
     ys = [[random.randint(b.minValue, b.maxValue) for _ in range(batch_size)]
@@ -225,7 +225,8 @@ def main() -> int:
     args = p.parse_args()
 
     from operator_modeling.core.IntType import IntType
-    from operator_modeling.ntt.NTT import loadTwiddlesFromXlsx, verifyIntt
+    from operator_modeling.ntt.twiddles import loadTwiddlesFromXlsx
+    from operator_modeling.ntt.verification import verifyIntt
 
     print("=" * 78)
     print(f"four-step NTT4096 — INVERSE half, n={N}, q={Q}")

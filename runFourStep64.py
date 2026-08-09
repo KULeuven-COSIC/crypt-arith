@@ -163,7 +163,7 @@ def verify_composed_negacyclic(inst, bounds: list, constants: list[int],
     workbook twiddle grid, and the pipeline wiring in one check — something
     neither block's standalone test covers.
     """
-    from operator_modeling.ntt.NTT import referenceNtt
+    from operator_modeling.ntt.verification import referenceNtt
 
     random.seed(SEED)
     xs = [[random.randint(0, (1 << BANK_IN_W) - 1) for _ in range(batch_size)]
@@ -237,7 +237,8 @@ def main() -> int:
 
     sys.path.insert(0, str(PROJECT_ROOT))
     from operator_modeling.core.IntType import IntType
-    from operator_modeling.ntt.NTT import loadTwiddlesFromXlsx, verifyNtt
+    from operator_modeling.ntt.twiddles import loadTwiddlesFromXlsx
+    from operator_modeling.ntt.verification import verifyNtt
 
     print("=" * 78)
     print(f"four-step NTT4096 building blocks — n={N}, q={Q}")

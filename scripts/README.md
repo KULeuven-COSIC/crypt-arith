@@ -2,14 +2,14 @@
 
 End-to-end workflow scripts that bridge the two subprojects in this repo:
 
-- **`NTT_modeling/`** — the Python modeling library (bound propagation + value
+- **`operator_modeling/`** — the Python modeling library (bound propagation + value
   simulation for Goldilocks-NTT butterflies).
 - **`versal_arith/`** — the SystemVerilog RTL generator (compressor trees,
   Booth multipliers, constant multipliers, butterfly modules) targeting AMD
   Versal LUT + LOOKAHEAD8 primitives.
 
 Each script in this directory is a glue layer that wires those two subprojects
-together — extracting hardware-relevant data from `NTT_modeling`, feeding it
+together — extracting hardware-relevant data from `operator_modeling`, feeding it
 into `versal_arith`, and (optionally) shipping the generated RTL to a remote
 V80 server for Vivado simulation.
 
@@ -44,7 +44,7 @@ flow:
                  (one of three twiddle sources)
                               |
                               v
-   GoldilocksSlice64 (NTT_modeling)
+   GoldilocksSlice64 (operator_modeling)
         .aIn = IntType.<signed/unsigned>(W)
         .bIn = IntType.<signed/unsigned>(W')
         .twiddle = NAF list
@@ -126,7 +126,7 @@ path (with the defaults below).
 
 | Flag | Default | Description |
 |---|---|---|
-| `--twiddles-xlsx` | `twiddles.xlsx` | Path to the workbook produced by `NTT_modeling.NTT.saveTwiddlesToXlsx`. |
+| `--twiddles-xlsx` | `twiddles.xlsx` | Path to the workbook produced by `operator_modeling.ntt.NTT.saveTwiddlesToXlsx`. |
 | `--twiddles-sheet` | `NTT_TWIDDLES` | Sheet name. Convention: `NTT_TWIDDLES` for forward, `iNTT_TWIDDLES` for inverse, custom for everything else. |
 
 The xlsx must follow the layout that `loadTwiddlesFromXlsx` parses:
@@ -326,7 +326,7 @@ The data flow:
               twiddle source (xlsx / Sage compute)
                               |
                               v
-   FullyPipelinedNTT / FullyPipelinedINTT (NTT_modeling)
+   FullyPipelinedNTT / FullyPipelinedINTT (operator_modeling)
         .setScheme(...)
         .getInputsNatural([bounds]) ; .compute()             (bounds path)
         .getInputsNatural([batches]) ; .compute()            (values path)
@@ -567,7 +567,7 @@ memory layout; the bank itself sees natural-order inputs.
 exactly its cmult's actual product width — no zero/sign extension to a
 uniform max — and a sidecar `output_bounds.json` records the per-port
 `IntType` bound for downstream chaining (load via
-`NTT_modeling.IntType.loadBoundsJson`).
+`operator_modeling.core.IntType.loadBoundsJson`).
 
 ### 3a. Generated layout
 
@@ -987,7 +987,7 @@ pip install openpyxl matplotlib
 ```
 
 - **Sage**: required for `--compute-twiddles` and for any twiddle math in
-  `NTT_modeling.NTT`.
+  `operator_modeling.ntt.NTT`.
 - **openpyxl**: required for any xlsx-based workflow.
 - **matplotlib**: required for `--visualization` (the bit-heap PNGs).
 
@@ -1014,10 +1014,10 @@ push the GPC primitives from `versal_arith/rtl/` into
 
 ## 8. Pitfalls and gotchas
 
-- **Always run from the project root.** `NTT_modeling/` uses relative imports
+- **Always run from the project root.** `operator_modeling/` uses relative imports
   (`from .Port import ...`) which require the parent directory on `sys.path`;
   every script in this directory inserts `PROJECT_ROOT` automatically, but
-  that only works when the cwd contains `NTT_modeling/` and `versal_arith/`.
+  that only works when the cwd contains `operator_modeling/` and `versal_arith/`.
 
 - **Asymmetric input bounds are per-butterfly only.** On
   `build_butterfly.py`, `--aIn-bound` and `--bIn-bound` must both be passed

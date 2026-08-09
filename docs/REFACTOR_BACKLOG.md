@@ -1,5 +1,9 @@
 # Refactor backlog
 
+> **Status after the operator-modeling reorganisation.** Items 2, 3, 4 and 6 are
+> discharged; items 1, 5 and 7 remain open and are described below unchanged.
+> Two new entries (8, 9) were opened by that work.
+
 Known duplications and rough edges, recorded deliberately rather than fixed in
 passing. Each entry says *what*, *why it was deferred*, and *what gates the fix*.
 
@@ -36,7 +40,10 @@ byte-identical against a pre-change run.
 
 ## 2. `GoldilocksSlice64.propagateValue` duplicates three things
 
-`NTT_modeling/ButterflyScheme.py:250` independently re-implements:
+**DISCHARGED.** `propagateValue` now reads `aInValues`/`bInValues` with the width taken from `aIn.bitWidth`; the `aInBitWidth` back-channel is cross-checked rather than trusted, and the `vectorBitWidth` fallback is a hard error. The duplicated lift and limb table remain — see item 8.
+
+
+`operator_modeling/ButterflyScheme.py:250` independently re-implements:
 
 - the slicing logic that `_shiftAndSliceTerms` already does for the bound path;
 - the twiddle lift, duplicating `_liftTwiddle` (`ButterflyScheme.py:88`);
@@ -47,7 +54,7 @@ byte-identical against a pre-change run.
 and the RTL spec cannot drift, because both derive from `_buildSliceTerms`
 (`ButterflyScheme.py:157`) — but the value path can.
 
-**Fix:** rewrite it on `NTT_modeling.terms.sumTermsValue`, so the value path
+**Fix:** rewrite it on `operator_modeling.core.terms.sumTermsValue`, so the value path
 consumes the same `SliceTerm` list the bound path and spec do:
 
 ```python
@@ -61,7 +68,7 @@ def propagateValue(self):
 **Prerequisite:** `_buildSliceTerms` needs `IntType` inputs, but `propagateValue`
 currently holds `list[int]` in the *same* `aIn`/`bIn` attributes. Split them into
 `aIn`/`aInValues` as `OperatorScheme` does, with `Butterfly.compute()`
-(`NTT_modeling/Butterfly.py:96-113`) writing both. `aInBitWidth`/`bInBitWidth`
+(`operator_modeling/Butterfly.py:96-113`) writing both. `aInBitWidth`/`bInBitWidth`
 then become redundant and can go.
 
 **Subtlety to verify, not assume:** `term.isSigned` would replace
@@ -75,6 +82,9 @@ a full `emitRtl` run.
 ---
 
 ## 3. Layer counting is copy-pasted four times
+
+**DISCHARGED for the new path.** `countCompressionLayers` is reached through per-family `HeapAnalysisCache` instances. The three legacy in-generator copies remain, on the legacy path only.
+
 
 The same ~14 lines — `compressAll` → `formGPCChain` → `merge_last_stage`, then
 `n_layers -= 1` on a successful merge and `+= 1` for the terminal adder — appear at:
@@ -95,6 +105,9 @@ parameter already covers the bmult variant.
 
 ## 4. `emitRtl` boilerplate is duplicated, and the ABC is incomplete
 
+**DISCHARGED.** `Operator.emitRtl` is a template with four hooks; `emitRtl` is off `OperatorScheme` entirely and `latency` is on it. The butterfly is not yet reparented — see item 9.
+
+
 `GoldilocksSlice64.emitRtl` (`ButterflyScheme.py:376`) and
 `FullyPipelinedNTT.emitRtl` (`NTT.py:671`) are ~90% the same sequence: mkdir →
 `getOperatorInterface` → obtain goldens → lazy backend import → `os.chdir` in
@@ -106,7 +119,7 @@ only on the concrete subclass. `areaCost` on `GoldilocksSlice64`
 (`ButterflyScheme.py:372`) is a bare `pass` that exists solely to make the class
 instantiable.
 
-**Fix:** reparent `ButterflyScheme` onto `NTT_modeling.OperatorScheme`, which
+**Fix:** reparent `ButterflyScheme` onto `operator_modeling.core.OperatorScheme`, which
 declares all five and carries the shared helpers (`runInDir`, `resolveBackend`,
 `sampleBound`, `readHexBatch`). Give `GoldilocksSlice64` a real `areaCost` using
 the same GPC-cost machinery the multiplier models use.
@@ -121,7 +134,7 @@ Once nothing depends on it:
 
 - delete `_output_int_type` (`const_mult.py:75`) and `_output_width`
   (`const_mult.py:60`) — superseded by `IntType` arithmetic in the model;
-- delete `loadBoundsJson`'s schema-1 branch (`NTT_modeling/IntType.py:178`),
+- delete `loadBoundsJson`'s schema-1 branch (`operator_modeling/IntType.py:178`),
   including the one-bit widening workaround;
 - decide whether `cli.py -operator cmult/cmultbank` keeps the scalar entry points
   or moves onto the spec path.
@@ -140,6 +153,9 @@ the scalar path. Do not remove it while those must reproduce byte-for-byte.
 
 ## 6. `reg_flag_list_gen(0, n)` raises `ZeroDivisionError`
 
+**DISCHARGED indirectly.** Every operator validates `pipelineStages >= 1` before reaching `reg_flag_list_gen`. The guard inside that function is still worth adding.
+
+
 `versal_arith/rtl_gen/compressor.py:10` divides by `pipeline_stages`, so passing
 `0` crashes — even though `cli.py:85-86` advertises "0 = pure combinational".
 Related: requesting more stages than there are layers silently clamps to
@@ -153,17 +169,43 @@ meanwhile.
 
 ## 7. Two independent NAF modulus-lift implementations
 
-- `NTT_modeling/utils.py:97` `nafTermsModulusLift` — exact target-first search
+- `operator_modeling/utils.py:97` `nafTermsModulusLift` — exact target-first search
   with a beam-search fallback.
 - `versal_arith/power_writer.py:61` `reduce_mod_q_min_powers_lift` — beam search
   only.
 
 **Deliberately kept separate.** They sit on opposite sides of the subproject
 boundary: `power_writer` belongs to the standalone `versal_arith` CLI, and having
-it import `NTT_modeling` would invert the documented dependency direction (see
+it import `operator_modeling` would invert the documented dependency direction (see
 `CLAUDE.md`, "Cross-project conventions"). The modeling layer always uses the
-`NTT_modeling` one and bakes the resulting NAF into the spec, so a spec-driven
+`operator_modeling` one and bakes the resulting NAF into the spec, so a spec-driven
 generator never lifts at all.
 
 **Action:** not a merge — just a cross-reference in both docstrings so the next
 reader knows the other exists and why.
+
+---
+
+## 8. `GoldilocksSlice64.propagateValue` still duplicates two things
+
+Phase 2 removed the width back-channel but not the rest of item 2: the method
+still re-implements the twiddle lift (duplicating `_liftTwiddle`) and carries a
+local copy of the `_LIMBS64` table. Routing it through
+`operator_modeling.core.terms.sumTermsValue` — already proven to reproduce it
+exactly — would remove roughly 120 lines.
+
+**Gate:** byte-identical regeneration. `verifyNtt` alone is insufficient here;
+see item 2's note on mod-q comparison.
+
+## 9. `ButterflyScheme` is still not an `OperatorScheme`
+
+`ConstMultScheme` and `MultiplierScheme` inherit the template; `ButterflyScheme`
+remains a bare `ABC`, so the shared type checks, `latency` and a real `areaCost`
+do not apply to it — `GoldilocksSlice64.areaCost` is still `pass`, returning
+`None` against its own annotation.
+
+Reparenting means splitting its `aIn`/`bIn` naming onto the base's declared
+attribute lists and giving it a real area model, for which the machinery now
+exists (`core.HeapAnalysis` plus `rtl_gen.heap_terms.heapLutCost`). There is
+also no `Butterfly`-side operator class yet: the butterfly is still driven
+scheme-first, unlike every other family.

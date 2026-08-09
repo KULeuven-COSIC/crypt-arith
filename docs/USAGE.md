@@ -16,11 +16,11 @@ conda activate ntt-sage
 pip install openpyxl
 ```
 
-All scripts must be run from the parent directory of `NTT_modeling/` (the package uses relative imports). Typical project root layout:
+All scripts must be run from the parent directory of `operator_modeling/` (the package uses relative imports). Typical project root layout:
 
 ```
 PythonProjects/
-├── NTT_modeling/         # the library package
+├── operator_modeling/         # the library package
 ├── docs/                 # this document and THEORY.md
 ├── runButterfly.py       # example entry-point script
 ├── twiddles.xlsx         # NAF-lifted twiddles (input)
@@ -33,9 +33,9 @@ PythonProjects/
 
 ```python
 from math import log2
-from NTT_modeling.NTT import FullyPipelinedNTT, calculateNttTwiddles
-from NTT_modeling.ButterflyScheme import GoldilocksSlice64
-from NTT_modeling.IntType import IntType
+from operator_modeling.ntt.NTT import FullyPipelinedNTT, calculateNttTwiddles
+from operator_modeling.ntt.ButterflyScheme import GoldilocksSlice64
+from operator_modeling.core.IntType import IntType
 
 q = 2**64 - 2**32 + 1
 n = 128
@@ -83,7 +83,7 @@ Layer 2: max bitWidth = 66, ...
 
 | Type | Module | Purpose |
 |------|--------|---------|
-| `IntType` | `NTT_modeling/IntType.py` | Signed-or-unsigned interval `(minValue, maxValue, zeroLsbs)`. Arithmetic ops propagate bounds, not values. |
+| `IntType` | `operator_modeling/IntType.py` | Signed-or-unsigned interval `(minValue, maxValue, zeroLsbs)`. Arithmetic ops propagate bounds, not values. |
 | `Port` (`SimpleInputPort` / `SimpleOutputPort`) | `Port.py` | Directed graph node carrying both an `IntType` bound and a `list[int]` test-vector batch. |
 | `ButterflyScheme` (abstract) | `ButterflyScheme.py` | Knows how to fold a butterfly's bound and value through hardware-specific math. |
 | `GoldilocksSlice64` | `ButterflyScheme.py` | Concrete scheme: 64-bit limb decomposition + Goldilocks identities for mod-q reduction. |
@@ -130,7 +130,7 @@ When both modes are loaded, `Butterfly.compute()` runs `propagateBound()` first 
 The `verifyNtt` / `verifyIntt` helpers do all the plumbing (random vector generation, bound + value loading, mod-q comparison against `referenceNtt`, bound-containment check):
 
 ```python
-from NTT_modeling.NTT import verifyNtt, verifyIntt
+from operator_modeling.ntt.NTT import verifyNtt, verifyIntt
 
 ok = verifyNtt(ntt, seed=42, batchSize=8)        # True / False
 # Prints: verifyNtt ntt128_GS: mod-q 64/64, bound containment 1792/1792
@@ -141,7 +141,7 @@ Optional kwargs: `primitiveRoot` (defaults to `F.zeta(n)` matching `calculateNtt
 ### 4d. Forward + inverse round-trip
 
 ```python
-from NTT_modeling.NTT import FullyPipelinedINTT, calculateInttTwiddles
+from operator_modeling.ntt.NTT import FullyPipelinedINTT, calculateInttTwiddles
 
 # Forward: cyclic GS
 twFwd = calculateNttTwiddles(modulus=q, n=n, butterflyType='GS',
@@ -181,7 +181,7 @@ inttN = FullyPipelinedINTT(name='inttN', n=n, q=q, butterflyType='GS',
 If you have a precomputed twiddle file (e.g. from an external tool), load it instead of regenerating:
 
 ```python
-from NTT_modeling.NTT import loadTwiddlesFromXlsx, saveTwiddlesToXlsx
+from operator_modeling.ntt.NTT import loadTwiddlesFromXlsx, saveTwiddlesToXlsx
 
 twiddles = loadTwiddlesFromXlsx('twiddles.xlsx', sheetName='NTT_TWIDDLES')
 # Round-trip clean:
@@ -200,8 +200,8 @@ dispatches to `Butterfly_RTL_gen` with cwd inside `run_dir`, and runs a local
 twos-complement-encoding sanity check on the first 8 testvector lines.
 
 ```python
-from NTT_modeling.ButterflyScheme import GoldilocksSlice64
-from NTT_modeling.IntType import IntType
+from operator_modeling.ntt.ButterflyScheme import GoldilocksSlice64
+from operator_modeling.core.IntType import IntType
 
 scheme = GoldilocksSlice64(name='probe', butterflyType='GS')
 scheme.aIn = IntType.signed(66)             # may differ between aIn and bIn
@@ -247,9 +247,9 @@ via `_extractGoldensNatural`, dispatches to `NTT_RTL_gen` with cwd inside
 
 ```python
 import random
-from NTT_modeling.NTT import FullyPipelinedNTT, calculateNttTwiddles
-from NTT_modeling.ButterflyScheme import GoldilocksSlice64
-from NTT_modeling.IntType import IntType
+from operator_modeling.ntt.NTT import FullyPipelinedNTT, calculateNttTwiddles
+from operator_modeling.ntt.ButterflyScheme import GoldilocksSlice64
+from operator_modeling.core.IntType import IntType
 
 q, n = 2**64 - 2**32 + 1, 128
 twiddles = calculateNttTwiddles(modulus=q, n=n, butterflyType='GS',
@@ -323,7 +323,7 @@ Layout: row 1 has `Layer 1 ... Layer L` + a `<TYPE> BOUNDS` label; rows 2..n+1 h
 
 ## 6. API summary
 
-### `NTT_modeling.NTT`
+### `operator_modeling.ntt.NTT`
 
 | Function/method | Purpose |
 |-----------------|---------|
@@ -348,7 +348,7 @@ Layout: row 1 has `Layer 1 ... Layer L` + a `<TYPE> BOUNDS` label; rows 2..n+1 h
 | `.emitRtl(topName, run_dir, pipeline_stages_per_layer=1, gen_testbench=True, visualization=False)` | One-call RTL emission from a populated instance. Internally extracts the spec and (when `gen_testbench=True`) the natural-order goldens from each populated port's `testVector`, then dispatches to `NTT_RTL_gen` with cwd inside `run_dir`. Runs a local sanity check. See §4h. |
 | **Class** `FullyPipelinedINTT(...)` | Subclass of `FullyPipelinedNTT`. Inherits everything; intended for inverse-twiddle inputs. The 1/n scaling is dropped. |
 
-### `NTT_modeling.ButterflyScheme`
+### `operator_modeling.ntt.ButterflyScheme`
 
 | Item | Purpose |
 |------|---------|
@@ -357,7 +357,7 @@ Layout: row 1 has `Layer 1 ... Layer L` + a `<TYPE> BOUNDS` label; rows 2..n+1 h
 | `GoldilocksSlice64.getOperatorInterface(name)` | Return a `ButterflyOperatorSpec` (defined in `versal_arith/butterfly_spec.py`) carrying per-input/output bit-widths + signedness, the lifted-NAF twiddle, and the bit-level provenance of every aOut / bOut summand. Consumed by `Butterfly_RTL_gen`. See §4g. |
 | `GoldilocksSlice64.emitRtl(name, run_dir, pipeline_stages=1, gen_testbench=True, test_size=1000, seed=None, visualization=False)` | One-call RTL emission. Internally calls `getOperatorInterface`, samples random `aIn` / `bIn` in the spec's bound range, runs `propagateValue` for goldens, dispatches to `Butterfly_RTL_gen` with cwd inside `run_dir`, runs a local sanity check. See §4g. |
 
-### `NTT_modeling.Butterfly`
+### `operator_modeling.ntt.Butterfly`
 
 | Item | Purpose |
 |------|---------|
@@ -366,7 +366,7 @@ Layout: row 1 has `Layer 1 ... Layer L` + a `<TYPE> BOUNDS` label; rows 2..n+1 h
 | `.connectInTo(connectATo, connectBTo)` | Wire input ports to specific upstream outputs. |
 | `.compute()` | Auto-dispatches: runs `propagateBound` and/or `propagateValue` based on which input fields are populated. |
 
-### `NTT_modeling.IntType`
+### `operator_modeling.core.IntType`
 
 | Item | Purpose |
 |------|---------|
@@ -377,7 +377,7 @@ Layout: row 1 has `Layer 1 ... Layer L` + a `<TYPE> BOUNDS` label; rows 2..n+1 h
 | `.slice(start, end)` | Bit-range slice — see `THEORY.md` section 3 for semantics. |
 | `.bitWidth`, `.isSigned`, `.isZero` | Properties. |
 
-### `NTT_modeling.utils`
+### `operator_modeling.core.utils`
 
 | Function | Purpose |
 |----------|---------|
@@ -388,7 +388,7 @@ Layout: row 1 has `Layer 1 ... Layer L` + a `<TYPE> BOUNDS` label; rows 2..n+1 h
 | `vectorAdd / Sub / Mul / Lshift / Rshift / Slice / Const / BitWidth` | Element-wise ops on `list[int]` mirroring `IntType` operators; used by `propagateValue`. |
 | `formatNafExpr(naf)` / `parseNafExpr(s)` | NAF list ↔ string `"-2^91 + 2^43"`. |
 
-### `NTT_modeling.Port`
+### `operator_modeling.core.Port`
 
 | Item | Purpose |
 |------|---------|
@@ -402,7 +402,7 @@ Layout: row 1 has `Layer 1 ... Layer L` + a `<TYPE> BOUNDS` label; rows 2..n+1 h
 
 **Sage import error.** Run from a sage env (or one with sage installed); plain Python won't have `from sage.all import GF`.
 
-**`from NTT_modeling...` import error.** Run from the *parent* directory of `NTT_modeling/`, not from inside it. The package uses relative imports.
+**`from operator_modeling...` import error.** Run from the *parent* directory of `operator_modeling/`, not from inside it. The package uses relative imports.
 
 **Per-butterfly debug noise.** `GoldilocksSlice64` prints per-butterfly NAF info if `verbose=True`. Default is `False`; pass `verbose=True` only when debugging a single butterfly.
 

@@ -267,7 +267,7 @@ The wrapper module is named `cmultbank` and exposes `clk`, `A_0..A_{N-1}`, and `
 
 **Natural-order convention** (driven by `scripts/build_bank.py --sheet PRE_TWIST` for n=128 forward NWC): the i-th input/output pair `A_<i>` / `P_<i>` corresponds to natural-order index `i`. With `--sheet PRE_TWIST --column simple`, `constants[i] = ψ^i mod q` (NAF-lifted), so `P_<i> = x[i] · ψ^i` — the standalone pre-twist for a negacyclic forward NTT. The CT pipeline downstream consumes these `P_<i>` values via its own bit-reversed memory layout; the bit-reversal is *not* part of the bank.
 
-**Sidecar `output_bounds.json`.** Alongside the RTL, `Cmultbank_RTL_gen` writes a JSON list with one entry per port: `{idx, constant, bitWidth, isSigned, minValue, maxValue}`. The four numeric fields together specify each `P_<i>`'s exact `IntType` bound. Downstream NTT generation can plug the bank's outputs straight into a pipeline by loading this file via `NTT_modeling.IntType.loadBoundsJson(path)` → `list[IntType]` and feeding it to `inst.getInputsNatural([bounds])`.
+**Sidecar `output_bounds.json`.** Alongside the RTL, `Cmultbank_RTL_gen` writes a JSON list with one entry per port: `{idx, constant, bitWidth, isSigned, minValue, maxValue}`. The four numeric fields together specify each `P_<i>`'s exact `IntType` bound. Downstream NTT generation can plug the bank's outputs straight into a pipeline by loading this file via `operator_modeling.core.IntType.loadBoundsJson(path)` → `list[IntType]` and feeding it to `inst.getInputsNatural([bounds])`.
 
 The console log gives a summary:
 
@@ -291,7 +291,7 @@ Cmult bank: 128 constant multipliers, 24-bit unsigned input
 The butterfly RTL generator is the only generator in this library that
 **does not** have a CLI hook in `cli.py`. Reason: it consumes a Python
 `ButterflyOperatorSpec` dataclass produced by
-`NTT_modeling.GoldilocksSlice64.getOperatorInterface(name)`, and accepts a
+`operator_modeling.ntt.ButterflyScheme.GoldilocksSlice64.getOperatorInterface(name)`, and accepts a
 Python callable (`golden_fn`) for testbench golden generation. Both inputs
 cross the subproject seam in a way that's awkward to round-trip through
 argparse.
@@ -365,14 +365,14 @@ def Butterfly_RTL_gen(
 | `pipeline_stages` | int | Compressor pipeline depth, distributed via `reg_flag_list_gen`. Same value applies to both compressors. |
 | `gen_testbench` | bool | If True, emit `<spec.name>_tb.sv` plus the four hex testvector files. Requires all four data arrays. |
 | `visualization` | bool | Emit per-output bit-heap PNGs. PNGs auto-prefixed `aOut_*` / `bOut_*` to prevent the two heaps from clobbering each other. |
-| `aIn` / `bIn` / `aOut` / `bOut` | `list[int]` | Testvector data arrays. All four required when `gen_testbench=True`; all must agree in length (= `test_size`). The generator no longer samples or computes goldens — caller is responsible for both. The wrapping `NTT_modeling.GoldilocksSlice64.emitRtl` does the random sampling + `propagateValue` golden computation and dispatches here. |
+| `aIn` / `bIn` / `aOut` / `bOut` | `list[int]` | Testvector data arrays. All four required when `gen_testbench=True`; all must agree in length (= `test_size`). The generator no longer samples or computes goldens — caller is responsible for both. The wrapping `operator_modeling.ntt.ButterflyScheme.GoldilocksSlice64.emitRtl` does the random sampling + `propagateValue` golden computation and dispatches here. |
 
 Returns a metadata dict: wrapper module name, per-output compressor module
 names, per-output pipeline-stage count, per-output compressor-output width,
 overall pipeline latency.
 
 The simpler / recommended entry point for almost all use cases is
-`NTT_modeling.GoldilocksSlice64.emitRtl(name, run_dir, ...)`, which wraps
+`operator_modeling.ntt.ButterflyScheme.GoldilocksSlice64.emitRtl(name, run_dir, ...)`, which wraps
 this function with random sampling, `propagateValue` golden computation, the
 `os.chdir(run_dir)` dance, and a local twos-complement-encoding sanity check.
 
@@ -506,7 +506,7 @@ class NTTOperatorSpec:
 ```
 
 Wiring tables are precomputed at extraction time (in
-`NTT_modeling.NTT.FullyPipelinedNTT.getOperatorInterface`). Per-natural input
+`operator_modeling.ntt.NTT.FullyPipelinedNTT.getOperatorInterface`). Per-natural input
 *and* output widths can both vary — input widths reflect each stage-0
 butterfly port's bound (set by the caller's `getInputsNatural`); output
 widths come from each final-stage butterfly port's bound (twiddle-driven via
@@ -560,7 +560,7 @@ Files written relative to cwd:
 | `manifest.json` | Pipeline metadata. |
 
 The simpler / recommended entry point is
-`NTT_modeling.NTT.FullyPipelinedNTT.emitRtl(topName, run_dir, ...)`, which
+`operator_modeling.ntt.NTT.FullyPipelinedNTT.emitRtl(topName, run_dir, ...)`, which
 extracts the spec, pulls goldens from the populated instance's testVectors,
 and dispatches here.
 
@@ -611,7 +611,7 @@ LOOKAHEAD8 chains.
 
 ### Public API
 
-Mirrors `rtl_gen.butterfly` / `rtl_gen.ntt` exactly so the NTT_modeling
+Mirrors `rtl_gen.butterfly` / `rtl_gen.ntt` exactly so the operator_modeling
 `emitRtl` methods can switch backends via a single `backend` kwarg:
 
   - `sim_rtl_gen.butterfly.Butterfly_SimRTL_gen(spec, pipeline_stages,
@@ -698,7 +698,7 @@ FullyPipelinedNTT(...).emitRtl(topName=..., run_dir=..., backend='sim')
 ### Testvector compatibility guarantee
 
 Both backends derive testvectors from the same `propagateValue` call
-in `NTT_modeling`, so `testvectors/x_in.txt` and `testvectors/y_out.txt`
+in `operator_modeling`, so `testvectors/x_in.txt` and `testvectors/y_out.txt`
 (and `aIn.txt` / `bIn.txt` / `aOut.txt` / `bOut.txt` for standalone
 butterflies) are **byte-identical** between the `_sim` and non-`_sim`
 run directories. The two backends can be diffed for cross-validation,

@@ -8,7 +8,7 @@ together.
 | Subproject | Purpose | Top-level docs |
 |---|---|---|
 | [`versal_arith/`](versal_arith/) | Versal-fabric arithmetic RTL generator (compressor trees, Booth multipliers, constant multipliers, Goldilocks NTT butterflies, full NTT pipelines) | [`versal_arith/docs/USAGE.md`](versal_arith/docs/USAGE.md), [`versal_arith/docs/THEORY.md`](versal_arith/docs/THEORY.md) |
-| [`NTT_modeling/`](NTT_modeling/) | Bound-propagation + value-batch modeling library that sizes the NTT datapath before it is emitted as RTL | [`docs/USAGE.md`](docs/USAGE.md), [`docs/THEORY.md`](docs/THEORY.md) |
+| [`operator_modeling/`](operator_modeling/) | Bound-propagation + value-batch modeling library that sizes the NTT datapath before it is emitted as RTL | [`docs/USAGE.md`](docs/USAGE.md), [`docs/THEORY.md`](docs/THEORY.md) |
 | [`scripts/`](scripts/) | Bridge CLIs: `build_butterfly.py`, `build_ntt.py`, `build_bank.py`, `run_remote_sim.py`, `run_remote_synth.py` | [`scripts/README.md`](scripts/README.md) |
 
 ---
@@ -66,9 +66,9 @@ python cli.py -operator cmp   -txt_file_name bitheap.txt -sv_file_name my_compre
 
 ---
 
-## 2. `NTT_modeling/` + Goldilocks-NTT pipelines — work in progress
+## 2. `operator_modeling/` + Goldilocks-NTT pipelines — work in progress
 
-`NTT_modeling/` is the **on-going** modeling and RTL-generator design of
+`operator_modeling/` is the **on-going** modeling and RTL-generator design of
 fully-pipelined NTT / INTT datapaths for the Goldilocks prime
 `q = 2^64 − 2^32 + 1` on Versal FPGAs. It is the companion to the
 arithmetic generator above: the modeling library sizes the datapath, and
@@ -150,8 +150,8 @@ PythonProjects/
 │   ├── rtl/                      # GPC primitives — add ALL to Vivado
 │   ├── ARITH2026_Evaluation_Examples/  # paper artifacts (checked in)
 │   └── docs/
-├── NTT_modeling/                 # bound-propagation + value-batch library (subproject 2)
-├── docs/                         # NTT_modeling USAGE.md + THEORY.md
+├── operator_modeling/                 # bound-propagation + value-batch library (subproject 2)
+├── docs/                         # operator_modeling USAGE.md + THEORY.md
 ├── scripts/                      # bridge CLIs
 ├── runButterfly.py               # example modeling driver
 ├── runNTT128_GS_s130.py          # example end-to-end runs

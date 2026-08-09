@@ -356,6 +356,69 @@ class MultiplierScheme(OperatorScheme):
         )
 
 
+class BehaviouralMult(MultiplierScheme):
+    '''`P = A * B`, modelled exactly and implemented not at all.
+
+    A placeholder for a general multiplier whose implementation has not been
+    chosen yet. Bounds and values are exact, so it can be dropped into a
+    pipeline to size the datapath and produce goldens — which is what the
+    four-step NTT needs for its inter-stage 64x64 multiplies, currently noted in
+    `runFourStep64.py` as *"deferred, not modelled here beyond their effect on
+    widths"*.
+
+    Almost nothing is implemented here, which is the point. The base class
+    already does the arithmetic: `propagateBound` is `self.aIn * self.bIn`,
+    exact for interval times interval including intervals that straddle zero,
+    and a leaf's `propagateValue` is the elementwise product. Declaring the leaf
+    is all that is required.
+
+    Deliberately **unlike** `BoothMult`:
+
+      - no minimum operand width, so any widths work;
+      - no forced two's-complement operands, so an unsigned input stays unsigned
+        and its bound stays tight;
+      - no area model, because there is no implementation to have an area.
+
+    `areaCost` and `emitRtl` therefore raise rather than returning something
+    plausible. A placeholder that reports zero area would silently make any
+    design containing it look cheaper than it is, and the whole reason to build
+    with one is to compare designs later.
+    '''
+
+    decomposition = 'leaf'
+    leafKind = 'behavioural'
+
+    def __init__(self, *args, assumedLatency: int | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        #: Latency to report. Assumed, not derived — there is no hardware to
+        #: derive it from. Defaults to whatever the caller asks for.
+        self.assumedLatency = assumedLatency
+
+    def _buildDecomposition(self):
+        return [], [], []
+
+    def _leafLatency(self, pipelineStages: int) -> int:
+        return (self.assumedLatency if self.assumedLatency is not None
+                else pipelineStages)
+
+    def _leafAreaCost(self) -> tuple[int, int]:
+        raise NotImplementedError(
+            f'{self.name}: BehaviouralMult has no area — it models the '
+            f'arithmetic and claims no implementation. Returning 0 would make '
+            f'any design containing it look free, which is exactly the '
+            f'comparison a placeholder must not corrupt. Swap in BoothMult (or '
+            f'a decomposition, once one exists) before costing this design.'
+        )
+
+    def emitRtl(self, name: str, run_dir, **kwargs) -> dict:
+        raise NotImplementedError(
+            f'{self.name}: BehaviouralMult emits no RTL — there is no '
+            f'implementation behind it, and rtl_gen/mult.py does not exist yet. '
+            f'Use it to propagate bounds and produce goldens; choose a real '
+            f'scheme when you need hardware.'
+        )
+
+
 class BoothMult(MultiplierScheme):
     '''Radix-4 Booth multiplier — an opaque leaf around `Bmult_RTL_gen`.
 

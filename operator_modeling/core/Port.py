@@ -2,6 +2,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 import warnings
 from .IntType import IntType
+from .Signal import Signal
 
 
 class Port(ABC):
@@ -66,11 +67,59 @@ class Port(ABC):
         return True
 
 
-class SimpleInputPort(Port):
-    def __init__(self, name = 'Undefined Port', bound: IntType | None = None, testVector: list[int] | None = None):
+class SignalCarryingPort(Port):
+    '''A port whose payload is a single `Signal`, with legacy field access.
+
+    A wire carries a bound and, optionally, a batch of values drawn from it.
+    Holding them as one `Signal` rather than two independent fields means the
+    pair is replaced whole, so a wire can never sit in a half-updated state
+    where the bound has moved on and the values have not.
+
+    `.bound` and `.testVector` remain readable and writable as separate
+    attributes, because plenty of code — inside this package and in the
+    top-level harnesses — touches them directly. Writing either rebuilds the
+    `Signal`, so the two views stay consistent; the immutability belongs to the
+    `Signal` object, not to the slot holding it.
+
+    Writing `.bound` on a port with no signal yet creates one. Writing
+    `.testVector` first is also allowed, and parks the values against a
+    placeholder zero bound until a real one arrives — which mirrors what the
+    two separate fields used to permit.
+    '''
+
+    def __init__(self, name='Undefined Port', bound: IntType | None = None,
+                 testVector: list[int] | None = None):
         super().__init__(name)
-        self.bound: IntType | None = bound
-        self.testVector: list[int] | None = testVector
+        self.signal: Signal | None = None
+        if bound is not None or testVector is not None:
+            self.signal = Signal(bound if bound is not None else IntType(0, 0, 0),
+                                 testVector)
+
+    @property
+    def bound(self) -> IntType | None:
+        return self.signal.bound if self.signal is not None else None
+
+    @bound.setter
+    def bound(self, value: IntType | None) -> None:
+        if value is None:
+            self.signal = None if self.signal is None else self.signal.withBound(IntType(0, 0, 0))
+            return
+        self.signal = (Signal(value) if self.signal is None
+                       else self.signal.withBound(value))
+
+    @property
+    def testVector(self) -> list[int] | None:
+        return self.signal.values if self.signal is not None else None
+
+    @testVector.setter
+    def testVector(self, value: list[int] | None) -> None:
+        self.signal = (Signal(IntType(0, 0, 0), value) if self.signal is None
+                       else self.signal.withValues(value))
+
+
+class SimpleInputPort(SignalCarryingPort):
+    def __init__(self, name = 'Undefined Port', bound: IntType | None = None, testVector: list[int] | None = None):
+        super().__init__(name, bound, testVector)
 
     def connect(self, port: Port) -> bool:
         connectionFlag = super().connect(port)
@@ -133,11 +182,9 @@ class SimpleInputPort(Port):
         self.bound = outputPort.bound
 
 
-class SimpleOutputPort(Port):
+class SimpleOutputPort(SignalCarryingPort):
     def __init__(self, name = 'Undefined Port', bound: IntType | None = None, testVector: list[int] | None = None):
-        super().__init__(name)
-        self.bound: IntType | None = bound
-        self.testVector: list[int] | None = testVector
+        super().__init__(name, bound, testVector)
 
     def connect(self, port: Port) -> bool:
         connectionFlag = super().connect(port)
@@ -183,13 +230,19 @@ class SimpleOutputPort(Port):
         return True
     
     def push(self) -> IntType | None:
-        # this method is to push the data type information from this output port to the connected input port; also propagates testVector for value-batch mode (each downstream input port gets both bound and testVector copied; either may be None)
+        '''Copy this port's payload to every input port it drives.
+
+        The whole `Signal` moves at once — bound and values together, either of
+        which may be absent. That atomicity is the point: a downstream port can
+        never end up holding a fresh bound beside a stale batch of values, which
+        is the state that used to arise when the two fields were copied
+        independently.
+        '''
         if not self.isConnected:
             return self.bound
         for inputPort in self.connectedPort:
             if not isinstance(inputPort, SimpleInputPort):
                 raise TypeError('Connected port is not an input port, cannot push data type information')
-            inputPort.bound = self.bound
-            inputPort.testVector = self.testVector
+            inputPort.signal = self.signal
         return self.bound
     

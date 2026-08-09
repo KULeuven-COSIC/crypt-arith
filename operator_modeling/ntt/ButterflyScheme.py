@@ -18,18 +18,58 @@ from butterfly_spec import ButterflyOperatorSpec, SliceTerm
 
 
 class ButterflyScheme(ABC):
-    def __init__(self, name: str = 'Undefined Butterfly Scheme', aIn: IntType | list[int] = IntType(0, 0, 0), bIn: IntType | list[int] = IntType(0, 0, 0), twiddle: IntType | int | list[tuple[int, int]] = IntType(0, 0, 0)):
+    def __init__(self, name: str = 'Undefined Butterfly Scheme',
+                 aIn: IntType | list[int] = IntType(0, 0, 0),
+                 bIn: IntType | list[int] = IntType(0, 0, 0),
+                 twiddle: IntType | int | list[tuple[int, int]] = IntType(0, 0, 0),
+                 aInValues: list[int] | None = None,
+                 bInValues: list[int] | None = None):
         self.name: str = name
+        # Bounds and value batches live in SEPARATE slots. They used to share
+        # `aIn`/`bIn`, which forced two things: the paths had to run in a fixed
+        # order (bound first, then value, overwriting the slot), and the register
+        # width had to be smuggled across in `aInBitWidth` because once the slot
+        # held a list the bound was gone. With the slots split, the value path
+        # simply reads `self.aIn.bitWidth` — the same number the bound path used,
+        # by construction rather than by assignment.
         self.aIn: IntType | list[int] = aIn
         self.bIn: IntType | list[int] = bIn
+        self.aInValues: list[int] | None = aInValues
+        self.bInValues: list[int] | None = bInValues
         self.twiddle: IntType | int | list[tuple[int, int]] = twiddle
         self.q: int = 0
-        # Hardware-register bit widths used for slicing in propagateValue. Set by Butterfly.compute()
-        # from the input port's bound.bitWidth so the value path uses the SAME slicing pattern as
-        # propagateBound — otherwise the unreduced sums diverge by multiples of q for inputs whose
-        # actual bit width is narrower than the bound's bit width.
+        # Deprecated: kept for one phase as a cross-check. When set, it MUST agree
+        # with `aIn.bitWidth`; `_inputBitWidths()` asserts that rather than
+        # trusting either source blindly. Remove once nothing assigns it.
         self.aInBitWidth: int | None = None
         self.bInBitWidth: int | None = None
+
+    def _inputBitWidths(self) -> tuple[int, int]:
+        '''Register widths the value path must slice at, taken from the bounds.
+
+        A width measured from the value batch would be wrong whenever the batch
+        does not exercise the top bits, and wrong here means the Goldilocks limb
+        boundary lands in the wrong place and the unreduced result is off by a
+        multiple of q. So the bound is the only source, and the deprecated
+        `aInBitWidth` is checked against it rather than used.
+        '''
+        if not isinstance(self.aIn, IntType) or not isinstance(self.bIn, IntType):
+            raise TypeError(
+                f'{self.name}: aIn/bIn must hold IntType bounds when the value '
+                f'path runs (value batches belong in aInValues/bInValues); got '
+                f'{type(self.aIn).__name__} and {type(self.bIn).__name__}'
+            )
+        aw, bw = self.aIn.bitWidth, self.bIn.bitWidth
+        for legacy, derived, which in ((self.aInBitWidth, aw, 'aIn'),
+                                       (self.bInBitWidth, bw, 'bIn')):
+            if legacy is not None and legacy != derived:
+                raise ValueError(
+                    f'{self.name}: {which}BitWidth={legacy} disagrees with '
+                    f'{which}.bitWidth={derived}. These must be the same number; '
+                    f'slicing at the wrong width shifts the Goldilocks limb '
+                    f'boundary and corrupts the result by a multiple of q.'
+                )
+        return aw, bw
 
     @abstractmethod
     def propagateBound(self) -> tuple[IntType, IntType]:
@@ -46,17 +86,18 @@ class ButterflyScheme(ABC):
     @abstractmethod
     def propagateValue(self) -> tuple[list[int], list[int]]:
         '''Given test vectors of inputs, return (aOutTestVec, bOutTestVec)'''
-        # common checks
-        if not isinstance(self.aIn, list):
-            raise TypeError(f'Expected aIn to be of type list[int], got {type(self.aIn)}')
-        if not isinstance(self.bIn, list):
-            raise TypeError(f'Expected bIn to be of type list[int], got {type(self.bIn)}')
+        # common checks — values come from aInValues/bInValues, widths from the
+        # bounds still sitting in aIn/bIn.
+        if not isinstance(self.aInValues, list):
+            raise TypeError(f'Expected aInValues to be of type list[int], got {type(self.aInValues)}')
+        if not isinstance(self.bInValues, list):
+            raise TypeError(f'Expected bInValues to be of type list[int], got {type(self.bInValues)}')
         if not isinstance(self.twiddle, (int, list)):
             raise TypeError(f'Expected twiddle to be of type int or list[tuple[int, int]] (NAF), got {type(self.twiddle)}')
-        if not all(isinstance(x, int) for x in self.aIn):
-            raise TypeError('Expected all elements of aIn to be of type int')
-        if not all(isinstance(x, int) for x in self.bIn):
-            raise TypeError('Expected all elements of bIn to be of type int')
+        if not all(isinstance(x, int) for x in self.aInValues):
+            raise TypeError('Expected all elements of aInValues to be of type int')
+        if not all(isinstance(x, int) for x in self.bInValues):
+            raise TypeError('Expected all elements of bInValues to be of type int')
 
     @abstractmethod
     def areaCost(self) -> tuple[int, int]:
@@ -250,9 +291,10 @@ class GoldilocksSlice64(ButterflyScheme):
     def propagateValue(self) -> tuple[list[int], list[int]]:
         # perform common checks
         super().propagateValue()
-        batchSize = len(self.aIn)
-        if len(self.bIn) != batchSize:
-            raise ValueError(f'aIn and bIn must have the same batch length, got {batchSize} and {len(self.bIn)}')
+        aBitWidth, bBitWidth = self._inputBitWidths()
+        batchSize = len(self.aInValues)
+        if len(self.bInValues) != batchSize:
+            raise ValueError(f'aInValues and bInValues must have the same batch length, got {batchSize} and {len(self.bInValues)}')
 
         if isinstance(self.twiddle, int):
             liftedTwiddle, liftedTwiddleNaf, _, _ = nafTermsModulusLift(x=self.twiddle, modulus=self.q, maxPower=95, maxMultipleOfModulus=2**32, maxSearchDepth=3, beamWidth=200, maxNumberOfTerms=3)
@@ -285,10 +327,17 @@ class GoldilocksSlice64(ButterflyScheme):
             if all(x == 0 for x in inputShifted):
                 return {}
             if end is None:
-                if inputBitWidth is not None:
-                    end = inputBitWidth + shift - 1
-                else:
-                    end = vectorBitWidth(inputShifted) - 1
+                if inputBitWidth is None:
+                    # Deliberately fatal. Measuring the width from the batch
+                    # instead of the bound puts the limb boundary in the wrong
+                    # place whenever the sample does not reach the top bits,
+                    # and the result is then wrong by a multiple of q --
+                    # invisible to any mod-q check, including verifyNtt.
+                    raise ValueError(
+                        'shiftAndSliceGoldilocks64Value: inputBitWidth is '
+                        'required; it must come from the input bound, never '
+                        'from measuring the value batch')
+                end = inputBitWidth + shift - 1
             if end < start:
                 raise ValueError(f'Invalid limb range ({start}, {end})')
 
@@ -329,11 +378,11 @@ class GoldilocksSlice64(ButterflyScheme):
             # Cooley-Tukey: aOut = aIn + bIn * twiddle ; bOut = aIn - bIn * twiddle
             aOutSlices: list[tuple[list[int], int]] = [(vectorConst(self.q, batchSize), -1)]
             bOutSlices: list[tuple[list[int], int]] = []
-            aInSlices = shiftAndSliceGoldilocks64Value(input=self.aIn, shift=0, inputBitWidth=self.aInBitWidth)
+            aInSlices = shiftAndSliceGoldilocks64Value(input=self.aInValues, shift=0, inputBitWidth=aBitWidth)
             aOutSlices.extend(processGoldilocks64SlicesValue(slices=aInSlices, limbFactors=limbs64, outerSign=1))
             bOutSlices.extend(processGoldilocks64SlicesValue(slices=aInSlices, limbFactors=limbs64, outerSign=1))
             for sign, shift in liftedTwiddleNaf:
-                bShiftedSlices = shiftAndSliceGoldilocks64Value(input=self.bIn, shift=shift, inputBitWidth=self.bInBitWidth)
+                bShiftedSlices = shiftAndSliceGoldilocks64Value(input=self.bInValues, shift=shift, inputBitWidth=bBitWidth)
                 aOutSlices.extend(processGoldilocks64SlicesValue(slices=bShiftedSlices, limbFactors=limbs64, outerSign=sign))
                 bOutSlices.extend(processGoldilocks64SlicesValue(slices=bShiftedSlices, limbFactors=limbs64, outerSign=-sign))
             aOut = vectorConst(0, batchSize)
@@ -348,14 +397,14 @@ class GoldilocksSlice64(ButterflyScheme):
             # Gentleman-Sande: aOut = aIn + bIn ; bOut = (aIn - bIn) * twiddle
             aOutSlices = [(vectorConst(self.q, batchSize), -1)]
             bOutSlices = []
-            aInSlices = shiftAndSliceGoldilocks64Value(input=self.aIn, shift=0, inputBitWidth=self.aInBitWidth)
-            bInSlices = shiftAndSliceGoldilocks64Value(input=self.bIn, shift=0, inputBitWidth=self.bInBitWidth)
+            aInSlices = shiftAndSliceGoldilocks64Value(input=self.aInValues, shift=0, inputBitWidth=aBitWidth)
+            bInSlices = shiftAndSliceGoldilocks64Value(input=self.bInValues, shift=0, inputBitWidth=bBitWidth)
             aOutSlices.extend(processGoldilocks64SlicesValue(slices=aInSlices, limbFactors=limbs64, outerSign=1))
             aOutSlices.extend(processGoldilocks64SlicesValue(slices=bInSlices, limbFactors=limbs64, outerSign=1))
             for sign, shift in liftedTwiddleNaf:
-                aShiftedSlices = shiftAndSliceGoldilocks64Value(input=self.aIn, shift=shift, inputBitWidth=self.aInBitWidth)
+                aShiftedSlices = shiftAndSliceGoldilocks64Value(input=self.aInValues, shift=shift, inputBitWidth=aBitWidth)
                 bOutSlices.extend(processGoldilocks64SlicesValue(slices=aShiftedSlices, limbFactors=limbs64, outerSign=sign))
-                bShiftedSlices = shiftAndSliceGoldilocks64Value(input=self.bIn, shift=shift, inputBitWidth=self.bInBitWidth)
+                bShiftedSlices = shiftAndSliceGoldilocks64Value(input=self.bInValues, shift=shift, inputBitWidth=bBitWidth)
                 bOutSlices.extend(processGoldilocks64SlicesValue(slices=bShiftedSlices, limbFactors=limbs64, outerSign=-sign))
             aOut = vectorConst(0, batchSize)
             bOut = vectorConst(0, batchSize)
@@ -434,11 +483,13 @@ class GoldilocksSlice64(ButterflyScheme):
             b_in = [_random.randint(b_lo, b_hi) for _ in range(test_size)]
 
             golden = GoldilocksSlice64(name=f'{name}_golden', butterflyType=self.butterflyType)
-            golden.aIn = a_in
-            golden.bIn = b_in
+            golden.aIn = (IntType.signed(spec.aInBitWidth) if spec.aInIsSigned
+                          else IntType.unsigned(spec.aInBitWidth))
+            golden.bIn = (IntType.signed(spec.bInBitWidth) if spec.bInIsSigned
+                          else IntType.unsigned(spec.bInBitWidth))
+            golden.aInValues = a_in
+            golden.bInValues = b_in
             golden.twiddle = spec.liftedTwiddleNaf
-            golden.aInBitWidth = spec.aInBitWidth
-            golden.bInBitWidth = spec.bInBitWidth
             a_out, b_out = golden.propagateValue()
 
         if backend == 'sim':
@@ -494,9 +545,17 @@ def _sanityCheckButterflyTestvectors(run_dir, spec, sample_size: int = 8) -> Non
     bInDec = [(x - (1 << bBw)) if bSign and (x >> (bBw - 1)) else x for x in bInHex[:n]]
 
     sv = GoldilocksSlice64(name='sanity', butterflyType=spec.butterflyType)
-    sv.aIn = aInDec
-    sv.bIn = bInDec
+    sv.aIn = (IntType.signed(spec.aInBitWidth) if spec.aInIsSigned
+              else IntType.unsigned(spec.aInBitWidth))
+    sv.bIn = (IntType.signed(spec.bInBitWidth) if spec.bInIsSigned
+              else IntType.unsigned(spec.bInBitWidth))
+    sv.aInValues = aInDec
+    sv.bInValues = bInDec
     sv.twiddle = spec.liftedTwiddleNaf
+    # Redundant on purpose. `_inputBitWidths()` derives the slicing width from
+    # sv.aIn/sv.bIn and raises if a legacy *BitWidth disagrees, so setting both
+    # here turns every emitRtl into a live cross-check that the two sources of
+    # the register width still agree.
     sv.aInBitWidth = spec.aInBitWidth
     sv.bInBitWidth = spec.bInBitWidth
     aOutPv, bOutPv = sv.propagateValue()

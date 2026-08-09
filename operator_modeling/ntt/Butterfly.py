@@ -101,13 +101,14 @@ class Butterfly():
             self.outputPortB.bound = bOutBound
 
         if valueReady:
-            self.scheme.aIn = aVec
-            self.scheme.bIn = bVec
-            # Use the input bound's bitWidth so propagateValue slices on the same
-            # hardware-register width that propagateBound assumed; otherwise unreduced
-            # results can differ from the predicted range by multiples of q.
-            self.scheme.aInBitWidth = aBound.bitWidth if aBound is not None else None
-            self.scheme.bInBitWidth = bBound.bitWidth if bBound is not None else None
+            # The bounds stay in aIn/bIn; the batches go to their own slots. The
+            # value path reads its slicing width straight off those bounds, so
+            # there is no width to hand across and no ordering dependency between
+            # the two paths beyond both needing the bounds present.
+            self.scheme.aIn = aBound
+            self.scheme.bIn = bBound
+            self.scheme.aInValues = aVec
+            self.scheme.bInValues = bVec
             aOutVec, bOutVec = self.scheme.propagateValue()
             self.outputPortA.testVector = aOutVec
             self.outputPortB.testVector = bOutVec

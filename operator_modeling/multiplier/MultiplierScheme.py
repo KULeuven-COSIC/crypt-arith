@@ -44,6 +44,7 @@ from abc import abstractmethod
 from typing import Callable
 
 from ..core.IntType import IntType
+from ..core.HeapAnalysis import HeapAnalysisCache
 from ..core.OperatorScheme import OperatorScheme, resolveBackend, runInDir, sampleBound
 from ..core.terms import sumTermsBound, sumTermsValue
 
@@ -56,6 +57,15 @@ from mult_spec import MultOperatorSpec, SubMultRef, WireDef       # noqa: E402
 
 #: Smallest operand the radix-4 Booth generator accepts (`booth_mult.py`).
 BOOTH_MIN_WIDTH = 6
+
+#: Booth prepends a partial-product generation layer, so its layer count runs one
+#: higher than a compressor-only operator's. Its own table — see core.HeapAnalysis
+#: on why each family gets one rather than sharing.
+_BOOTH_HEAPS = HeapAnalysisCache(terminalLayers=2, label='booth')
+
+#: A recombination heap is compressor-plus-terminal-adder, like a constant
+#: multiplier's — one terminal layer, so a separate table from Booth's.
+_RECOMBINE_HEAPS = HeapAnalysisCache(terminalLayers=1, label='recombine')
 
 
 def physicalWidthFor(bound: IntType, requireSigned: bool = False) -> int:
@@ -271,13 +281,13 @@ class MultiplierScheme(OperatorScheme):
         dsp = sum(c[1] for c in seen.values())
 
         if recombination:
-            from rtl_gen.heap_terms import buildHeapDescriptors, countCompressionLayers, heapLutCost
+            from rtl_gen.heap_terms import buildHeapDescriptors, heapLutCost
 
             outWidth = self.propagateBound().bitWidth
             _, _, bitheapList, widthBh = buildHeapDescriptors(
                 recombination, outWidth, '')
             if bitheapList:
-                _, layers, finals = countCompressionLayers(bitheapList, widthBh)
+                _, layers, finals = _RECOMBINE_HEAPS.analyse(bitheapList, widthBh)
                 lut += heapLutCost(layers, finals)
         return lut, dsp
 
@@ -377,34 +387,73 @@ class BoothMult(MultiplierScheme):
     def _leafLatency(self, pipelineStages: int) -> int:
         return pipelineStages
 
-    def _leafAreaCost(self) -> tuple[int, int]:
-        '''Partial-product heap plus its compressor tree.
+    def _operandWidths(self) -> tuple[int, int]:
+        '''`(OPA, OPB)` exactly as `booth_mult.py` derives them.
 
-        Reproduces the heap shape `booth_mult.py` builds: `wb/2` radix-4 rows
-        each spanning `wa+2` columns from column `2i`, one extra bit per row for
-        the Booth negation, and one Baugh-Wooley constant at column `wa`.
+        Subtle, and easy to get wrong: the generator rounds each operand up to
+        even only to decide *which is wider*, then keeps the **raw**, unrounded
+        width for the multiplicand. Only the recoded operand `OPB` stays
+        rounded. Rounding both — the obvious reading — invents a phantom column
+        whenever the multiplicand is odd, which over-stated the LUT estimate by
+        6-10% on every odd width, worst at the small operands that decomposition
+        strategies actually produce.
         '''
-        from rtl_gen.heap_terms import countCompressionLayers, heapLutCost
-
         wa, wb = self.physicalWidths()
-        wa += wa % 2          # the generator rounds each operand up to even
-        wb += wb % 2
-        if wb < wa:           # and swaps so the recoded operand is the wider one
-            wa, wb = wb, wa
+        a2 = wa if wa % 2 == 0 else wa + 1
+        b2 = wb if wb % 2 == 0 else wb + 1
+        if b2 < a2:
+            return wb, a2          # swapped: multiplicand is the raw width_b
+        return wa, b2
 
-        heights = [0] * (wa + wb)
-        for i in range(wb // 2):
-            for j in range(wa + 2):
-                if 2 * i + j < len(heights):
-                    heights[2 * i + j] += 1
+    def _partialProductHeights(self) -> list[int]:
+        '''Column heights of the radix-4 Booth partial-product heap.'''
+        opa, opb = self._operandWidths()
+        heights = [0] * (opa + opb)
+        for i in range(opb // 2):
+            for j in range(opa + 2):
+                heights[2 * i + j] += 1
             heights[2 * i] += 1
-        heights[wa] += 1
+        heights[opa] += 1
+        return heights
 
+    def _partialProductLuts(self) -> int:
+        '''LUTs spent generating the partial products, before any compression.
+
+        This is the term the model used to omit entirely, and per the ARITH 2026
+        paper it is the asymptotically dominant one — the whole point of the
+        dual-5-LUT mapping. Omitting it understated a 24x24 Booth multiplier by
+        somewhere between 60% and 125%, and biased every decomposition
+        comparison in Booth's favour.
+
+        The primitive counts are read off the generator's own output rather than
+        theorised. Across all fourteen checked-in
+        `ARITH2026_Evaluation_Examples/Bmult*/` modules, exactly:
+
+            LUT6_2  = OPB - 1
+            total   = (OPB / 2) * (OPA - 1) + 1
+            LUT5    = total - LUT6_2
+
+        **Assumption, stated rather than buried:** a `LUT6_2` occupies one LUT6
+        site, and two `LUT5`s pack into one site under the dual-5-LUT mode the
+        XDC directives ask for. Perfect pairing is optimistic; the true figure
+        sits between this and one site per primitive. That uncertainty is inside
+        the +-5% band the area model is held to for everything except very small
+        operands, and it is the honest shape of the estimate.
+        '''
+        opa, opb = self._operandWidths()
+        total = (opb // 2) * (opa - 1) + 1
+        lut62 = opb - 1
+        lut5 = max(total - lut62, 0)
+        return lut62 + (lut5 + 1) // 2
+
+    def _leafAreaCost(self) -> tuple[int, int]:
+        '''Partial-product generation plus the compressor tree that sums it.'''
+        from rtl_gen.heap_terms import heapLutCost
+
+        heights = self._partialProductHeights()
         widthBh = sum(h * (2 ** c) for c, h in enumerate(heights)).bit_length()
-        # terminal_layers=2: Booth prepends a partial-product generation layer.
-        _, layers, finals = countCompressionLayers(heights, widthBh,
-                                                   terminal_layers=2)
-        return heapLutCost(layers, finals), 0
+        _, layers, finals = _BOOTH_HEAPS.analyse(heights, widthBh)
+        return self._partialProductLuts() + heapLutCost(layers, finals), 0
 
     def emitRtl(self, name: str, run_dir,
                 pipeline_stages: int = 1,

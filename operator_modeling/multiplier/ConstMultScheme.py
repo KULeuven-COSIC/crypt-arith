@@ -31,6 +31,7 @@ import os as _os
 import random as _random
 import sys as _sys
 
+from ..core.HeapAnalysis import HeapAnalysisCache
 from ..core.IntType import IntType
 from ..core.OperatorScheme import (OperatorScheme, readHexBatch, resolveBackend,
                              runInDir, sampleBound, sampleRegisterRange)
@@ -45,10 +46,11 @@ from butterfly_spec import SliceTerm            # noqa: E402
 from const_mult_spec import ConstMultOperatorSpec  # noqa: E402
 
 
-# Bit-heap analysis is memoised on (bitheapList, widthBh). A bank of 64 twiddles
-# reuses constants heavily, and `compressAll` deep-copies its heap, so repeating
-# it per entry is the dominant cost of costing a bank.
-_heapAnalysisCache: dict[tuple, tuple] = {}
+# Bit-heap analysis is memoised: a bank of 64 twiddles reuses constant shapes
+# heavily and `compressAll` deep-copies its heap, so repeating it per entry is the
+# dominant cost of costing a bank. This family's own table — see core.HeapAnalysis
+# on why each family gets one rather than sharing one keyed on terminalLayers.
+_CONST_MULT_HEAPS = HeapAnalysisCache(terminalLayers=1, label='constMult')
 
 
 def defaultModuleName(aInBitWidth: int, constant: int) -> str:
@@ -368,13 +370,8 @@ class NafConstMult(ConstMultScheme):
 
     def _analyseHeap(self):
         '''`(nLayers, layerList, finalHeights)`, memoised across identical heaps.'''
-        from rtl_gen.heap_terms import countCompressionLayers
-
         _, _, bitheap_list, width_bh = self._heapDescriptors()
-        key = (tuple(bitheap_list), width_bh)
-        if key not in _heapAnalysisCache:
-            _heapAnalysisCache[key] = countCompressionLayers(bitheap_list, width_bh)
-        return _heapAnalysisCache[key]
+        return _CONST_MULT_HEAPS.analyse(bitheap_list, width_bh)
 
     def latency(self, pipelineStages: int = 1) -> int:
         '''Pipeline registers this multiplier contributes.

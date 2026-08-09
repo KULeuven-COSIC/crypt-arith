@@ -3,7 +3,7 @@
 `InterStageWire` and `NTTOperatorSpec` are pure-data dataclasses defined
 once and shared between two consumers:
 
-  - `NTT_modeling.NTT.FullyPipelinedNTT.getOperatorInterface` populates an
+  - `operator_modeling.ntt.NTT.FullyPipelinedNTT.getOperatorInterface` populates an
     `NTTOperatorSpec` from a populated NTT instance (every butterfly's
     inputs and outputs have bounds set by `compute()`).
 
@@ -14,11 +14,11 @@ once and shared between two consumers:
     in the grid.
 
 The file lives at the top level of `versal_arith/` (NOT inside `rtl_gen/`)
-so importing it from `NTT_modeling` does not trigger `rtl_gen/__init__.py`'s
+so importing it from `operator_modeling` does not trigger `rtl_gen/__init__.py`'s
 import chain. Same convention as `butterfly_spec.py`.
 
 The wiring tables in `NTTOperatorSpec` are precomputed at extraction time
-so the consumer never needs to import any `NTT_modeling` helpers
+so the consumer never needs to import any `operator_modeling` helpers
 (`butterflyToMems`, `memToButterfly`, `bitReverse`).
 """
 from __future__ import annotations

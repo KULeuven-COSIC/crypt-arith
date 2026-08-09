@@ -184,7 +184,7 @@ def loadBoundsJson(path: str) -> list[IntType]:
 
     Typical use:
 
-        from NTT_modeling.IntType import loadBoundsJson
+        from operator_modeling.core.IntType import loadBoundsJson
         bounds = loadBoundsJson('work/<scenario>/cmultbank/output_bounds.json')
         ntt.getInputsNatural(bounds)
 

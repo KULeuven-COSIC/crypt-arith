@@ -790,7 +790,7 @@ endmodule
                                 max_latency, n_mults, test_size, signed_input=signed_input)
 
     # Sidecar: per-port IntType bounds. Downstream consumers (NTT.getInputsNatural)
-    # reload this via NTT_modeling.IntType.loadBoundsJson and feed the resulting
+    # reload this via operator_modeling.core.IntType.loadBoundsJson and feed the resulting
     # list[IntType] straight into the next pipeline stage.
     bounds_entries = []
     for i, const in enumerate(constants):

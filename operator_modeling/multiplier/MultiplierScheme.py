@@ -43,12 +43,12 @@ import sys as _sys
 from abc import abstractmethod
 from typing import Callable
 
-from .IntType import IntType
-from .OperatorScheme import OperatorScheme, resolveBackend, runInDir, sampleBound
-from .terms import sumTermsBound, sumTermsValue
+from ..core.IntType import IntType
+from ..core.OperatorScheme import OperatorScheme, resolveBackend, runInDir, sampleBound
+from ..core.terms import sumTermsBound, sumTermsValue
 
 _versalArithDir = _os.path.normpath(
-    _os.path.join(_os.path.dirname(__file__), '..', 'versal_arith'))
+    _os.path.join(_os.path.dirname(__file__), '..', '..', 'versal_arith'))
 if _versalArithDir not in _sys.path:
     _sys.path.append(_versalArithDir)
 from butterfly_spec import SliceTerm                              # noqa: E402

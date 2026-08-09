@@ -67,9 +67,9 @@ def main() -> int:
                        ("sim", RUN_DIR_SIM, f"{TOP_NAME}_sim")]
 
     sys.path.insert(0, str(PROJECT_ROOT))
-    from NTT_modeling.IntType import loadBoundsJson
-    from NTT_modeling.ButterflyScheme import GoldilocksSlice64
-    from NTT_modeling.NTT import FullyPipelinedNTT, calculateNttTwiddles, verifyNtt
+    from operator_modeling.core.IntType import loadBoundsJson
+    from operator_modeling.ntt.ButterflyScheme import GoldilocksSlice64
+    from operator_modeling.ntt.NTT import FullyPipelinedNTT, calculateNttTwiddles, verifyNtt
 
     if not BANK_BOUNDS.is_file():
         raise SystemExit(

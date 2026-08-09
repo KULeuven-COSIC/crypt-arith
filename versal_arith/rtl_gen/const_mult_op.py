@@ -1,7 +1,7 @@
 """Spec-driven constant-multiplier RTL generator.
 
 Consumes a `ConstMultOperatorSpec` produced by
-`NTT_modeling.ConstMultScheme.NafConstMult.getOperatorInterface`, together with
+`operator_modeling.multiplier.ConstMultScheme.NafConstMult.getOperatorInterface`, together with
 explicit testvector and golden arrays, and emits SystemVerilog plus a
 self-checking testbench.
 

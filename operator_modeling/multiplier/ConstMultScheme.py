@@ -31,14 +31,14 @@ import os as _os
 import random as _random
 import sys as _sys
 
-from .IntType import IntType
-from .OperatorScheme import (OperatorScheme, readHexBatch, resolveBackend,
+from ..core.IntType import IntType
+from ..core.OperatorScheme import (OperatorScheme, readHexBatch, resolveBackend,
                              runInDir, sampleBound, sampleRegisterRange)
-from .terms import sumTermsBound, sumTermsValue
-from .utils import formatNafExpr, nafTerms, nafTermsModulusLift
+from ..core.terms import sumTermsBound, sumTermsValue
+from ..core.utils import formatNafExpr, nafTerms, nafTermsModulusLift
 
 _versalArithDir = _os.path.normpath(
-    _os.path.join(_os.path.dirname(__file__), '..', 'versal_arith'))
+    _os.path.join(_os.path.dirname(__file__), '..', '..', 'versal_arith'))
 if _versalArithDir not in _sys.path:
     _sys.path.append(_versalArithDir)
 from butterfly_spec import SliceTerm            # noqa: E402
@@ -128,7 +128,7 @@ class NafConstMult(ConstMultScheme):
           - an `int` with a modulus is replaced by the congruent value with the
             sparsest NAF found, which is what the hardware then implements.
 
-        Always uses `NTT_modeling.utils.nafTermsModulusLift` — the exact
+        Always uses `operator_modeling.core.utils.nafTermsModulusLift` — the exact
         target-first search with a beam fallback — never
         `versal_arith.power_writer.reduce_mod_q_min_powers_lift`. The result is
         baked into the spec, so the generator never lifts anything itself.

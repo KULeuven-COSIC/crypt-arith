@@ -1,7 +1,7 @@
 """Butterfly RTL generator.
 
 Consumes a `ButterflyOperatorSpec` (produced by
-`NTT_modeling.GoldilocksSlice64.getOperatorInterface`) and emits SystemVerilog
+`operator_modeling.ntt.ButterflyScheme.GoldilocksSlice64.getOperatorInterface`) and emits SystemVerilog
 for one Goldilocks-NTT butterfly module: two compressor instances (one per
 output, aOut and bOut) sharing the input registers `aIn` and `bIn`, with the
 per-position twiddle baked in via limb-shifted slices of the inputs.
@@ -14,7 +14,7 @@ emitted with the same signal_name across both heaps).
 When `gen_testbench=True`, the caller supplies the four `aIn` / `bIn` /
 `aOut` / `bOut` testvector arrays as data; the generator just writes the hex
 files and emits the self-checking testbench. The caller (typically
-`NTT_modeling.GoldilocksSlice64.emitRtl`) is responsible for sampling
+`operator_modeling.ntt.ButterflyScheme.GoldilocksSlice64.emitRtl`) is responsible for sampling
 inputs and computing goldens via `propagateValue`.
 """
 

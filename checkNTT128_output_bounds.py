@@ -22,9 +22,9 @@ TOP_NAME     = "NTT_n128_GS_after_pretwist"
 
 def main() -> int:
     sys.path.insert(0, str(PROJECT_ROOT))
-    from NTT_modeling.IntType import loadBoundsJson
-    from NTT_modeling.ButterflyScheme import GoldilocksSlice64
-    from NTT_modeling.NTT import FullyPipelinedNTT, calculateNttTwiddles
+    from operator_modeling.core.IntType import loadBoundsJson
+    from operator_modeling.ntt.ButterflyScheme import GoldilocksSlice64
+    from operator_modeling.ntt.NTT import FullyPipelinedNTT, calculateNttTwiddles
 
     q, n = 2**64 - 2**32 + 1, 128
     L    = int(log2(n))

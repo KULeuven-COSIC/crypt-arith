@@ -1,7 +1,7 @@
 from math import log2
-from NTT_modeling.ButterflyScheme import GoldilocksSlice64
-from NTT_modeling.IntType import IntType
-from NTT_modeling.NTT import (
+from operator_modeling.ntt.ButterflyScheme import GoldilocksSlice64
+from operator_modeling.core.IntType import IntType
+from operator_modeling.ntt.NTT import (
     FullyPipelinedNTT, FullyPipelinedINTT,
     calculateNttTwiddles, calculateInttTwiddles,
     verifyNtt, verifyIntt,

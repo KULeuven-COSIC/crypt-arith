@@ -100,7 +100,7 @@ def ensure_bank(IntType, inputBound, regen: bool = False) -> tuple[list, list[in
     POSTTWIST holds raw mod-q residues with no pre-lifted column, so the
     generator must do the NAF lift (--modulus). The input is INTT64 #2's
     output, which is signed — hence --signed-input."""
-    from NTT_modeling.IntType import loadBoundsJson
+    from operator_modeling.core.IntType import loadBoundsJson
 
     width = inputBound.bitWidth
     if regen or not BANK_BOUNDS.is_file():
@@ -153,7 +153,7 @@ def verify_composed_negacyclic_inverse(inst, bounds: list, constants: list[int],
     constants, and compare mod q against the Sage negacyclic inverse *with*
     divideByN=True. Mirror of the forward harness's composed check.
     """
-    from NTT_modeling.NTT import referenceIntt
+    from operator_modeling.ntt.NTT import referenceIntt
 
     random.seed(SEED)
     ys = [[random.randint(b.minValue, b.maxValue) for _ in range(batch_size)]
@@ -224,8 +224,8 @@ def main() -> int:
                    help="regenerate the post-twist bank even if it exists")
     args = p.parse_args()
 
-    from NTT_modeling.IntType import IntType
-    from NTT_modeling.NTT import loadTwiddlesFromXlsx, verifyIntt
+    from operator_modeling.core.IntType import IntType
+    from operator_modeling.ntt.NTT import loadTwiddlesFromXlsx, verifyIntt
 
     print("=" * 78)
     print(f"four-step NTT4096 — INVERSE half, n={N}, q={Q}")

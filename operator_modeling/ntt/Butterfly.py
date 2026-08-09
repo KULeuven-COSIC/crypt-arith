@@ -1,8 +1,8 @@
 from __future__ import annotations
-from .Port import Port, SimpleInputPort, SimpleOutputPort
+from ..core.Port import Port, SimpleInputPort, SimpleOutputPort
 from .ButterflyScheme import ButterflyScheme, GoldilocksSlice64
-from .IntType import IntType
-from .utils import nafTerms, nafTermsCount, nafTermsMaxPower
+from ..core.IntType import IntType
+from ..core.utils import nafTerms, nafTermsCount, nafTermsMaxPower
 
 
 class Butterfly():

@@ -40,7 +40,7 @@ from .utils import vectorAdd, vectorConst, vectorLshift, vectorSlice, vectorSub
 # importing them does not pull in rtl_gen/__init__.py's generator chain. Mirror
 # the path append ButterflyScheme.py does.
 _versalArithDir = _os.path.normpath(
-    _os.path.join(_os.path.dirname(__file__), '..', 'versal_arith'))
+    _os.path.join(_os.path.dirname(__file__), '..', '..', 'versal_arith'))
 if _versalArithDir not in _sys.path:
     _sys.path.append(_versalArithDir)
 from butterfly_spec import SliceTerm  # noqa: E402

@@ -5,11 +5,11 @@ from math import log2
 from sage.all import GF
 from .Butterfly import Butterfly
 from .ButterflyScheme import ButterflyScheme
-from .utils import nafTerms, nafTermsModulusLift, bitReverse, formatNafExpr, parseNafExpr
-from .IntType import IntType
+from ..core.utils import nafTerms, nafTermsModulusLift, bitReverse, formatNafExpr, parseNafExpr
+from ..core.IntType import IntType
 
 # versal_arith path was added to sys.path by the .ButterflyScheme import above
-# (see NTT_modeling/ButterflyScheme.py for the on-demand append). Both the
+# (see ButterflyScheme.py for the on-demand append). Both the
 # pipeline spec dataclass and the rtl_gen ntt generator are imported through it.
 from ntt_spec import NTTOperatorSpec, InterStageWire
 

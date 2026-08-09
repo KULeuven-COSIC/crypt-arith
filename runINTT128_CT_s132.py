@@ -49,9 +49,9 @@ def main() -> int:
                        ("sim", RUN_DIR_SIM, f"{TOP_NAME}_sim")]
 
     sys.path.insert(0, str(PROJECT_ROOT))
-    from NTT_modeling.IntType import IntType
-    from NTT_modeling.ButterflyScheme import GoldilocksSlice64
-    from NTT_modeling.NTT import (FullyPipelinedINTT, calculateInttTwiddles,
+    from operator_modeling.core.IntType import IntType
+    from operator_modeling.ntt.ButterflyScheme import GoldilocksSlice64
+    from operator_modeling.ntt.NTT import (FullyPipelinedINTT, calculateInttTwiddles,
                                   verifyIntt)
 
     q, n = 2**64 - 2**32 + 1, 128

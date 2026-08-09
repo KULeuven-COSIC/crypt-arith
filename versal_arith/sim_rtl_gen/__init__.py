@@ -1,6 +1,6 @@
 """Simulation-only behavioral RTL backend for the Goldilocks NTT butterfly /
 pipeline. Mirrors the hw `rtl_gen` package's two public entry points
-(`Butterfly_RTL_gen` / `NTT_RTL_gen`) so the NTT_modeling `emitRtl` methods
+(`Butterfly_RTL_gen` / `NTT_RTL_gen`) so the operator_modeling `emitRtl` methods
 can pick a backend via a `backend='sim'` kwarg.
 
 The sim backend consumes the exact same `ButterflyOperatorSpec` /

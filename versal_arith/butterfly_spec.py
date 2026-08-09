@@ -3,7 +3,7 @@
 `SliceTerm` and `ButterflyOperatorSpec` are pure-data dataclasses defined
 once and shared between two consumers:
 
-  - `NTT_modeling.ButterflyScheme.GoldilocksSlice64.getOperatorInterface`
+  - `operator_modeling.ntt.ButterflyScheme.GoldilocksSlice64.getOperatorInterface`
     populates a `ButterflyOperatorSpec` from a butterfly scheme that has
     already had its input bounds set (so input bit widths and signedness
     are known).

@@ -63,8 +63,8 @@ DEFAULT_WORK_DIR = PROJECT_ROOT / "work"
 
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from NTT_modeling.IntType import IntType  # noqa: E402
-from NTT_modeling.utils import parseNafExpr  # noqa: E402
+from operator_modeling.core.IntType import IntType  # noqa: E402
+from operator_modeling.core.utils import parseNafExpr  # noqa: E402
 
 GOLDILOCKS_Q = 2 ** 64 - 2 ** 32 + 1
 
@@ -160,7 +160,7 @@ def main() -> None:
         raise SystemExit("--pipeline-stages must be >= 1")
 
     sys.path.insert(0, str(VERSAL_DIR))
-    from NTT_modeling.ConstMultScheme import NafConstMult, defaultModuleName
+    from operator_modeling.multiplier.ConstMultScheme import NafConstMult, defaultModuleName
 
     aIn = parse_bound(args.aIn_bound)
     if aIn.isZero:

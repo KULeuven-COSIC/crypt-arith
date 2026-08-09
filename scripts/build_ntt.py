@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""build_ntt.py — bridge NTT_modeling and versal_arith for a full NTT/INTT pipeline.
+"""build_ntt.py — bridge operator_modeling and versal_arith for a full NTT/INTT pipeline.
 
 Two modes:
 
@@ -60,7 +60,7 @@ from math import log2
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-NTT_MODELING_DIR = PROJECT_ROOT / "NTT_modeling"
+NTT_MODELING_DIR = PROJECT_ROOT / "operator_modeling"
 VERSAL_DIR = PROJECT_ROOT / "versal_arith"
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 DEFAULT_XLSX = PROJECT_ROOT / "twiddles.xlsx"
@@ -69,9 +69,9 @@ DEFAULT_WORK_DIR = PROJECT_ROOT / "work"
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from NTT_modeling.IntType import IntType  # noqa: E402
-from NTT_modeling.ButterflyScheme import GoldilocksSlice64  # noqa: E402
-from NTT_modeling.NTT import (  # noqa: E402
+from operator_modeling.core.IntType import IntType  # noqa: E402
+from operator_modeling.ntt.ButterflyScheme import GoldilocksSlice64  # noqa: E402
+from operator_modeling.ntt.NTT import (  # noqa: E402
     FullyPipelinedNTT, FullyPipelinedINTT,
     calculateNttTwiddles, calculateInttTwiddles, loadTwiddlesFromXlsx,
 )

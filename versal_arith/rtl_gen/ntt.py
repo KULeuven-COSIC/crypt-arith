@@ -7,11 +7,11 @@ natural-order input/output testvectors, aggregated XDC files, and a JSON
 manifest summarizing pipeline latency.
 
 Consumes an `NTTOperatorSpec` (produced by
-`NTT_modeling.NTT.FullyPipelinedNTT.getOperatorInterface`) and the
+`operator_modeling.ntt.NTT.FullyPipelinedNTT.getOperatorInterface`) and the
 per-layer pipeline-stage configuration. The user is responsible for
 providing precomputed natural-order goldens (typically by running batches
 through the populated FullyPipelinedNTT instance — same approach as
-`NTT_modeling._verifyImpl`).
+`operator_modeling.ntt.NTT._verifyImpl`).
 """
 
 from __future__ import annotations

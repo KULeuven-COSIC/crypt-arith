@@ -21,9 +21,9 @@ TOP_NAME     = "NTT_s130"
 
 def main() -> int:
     sys.path.insert(0, str(PROJECT_ROOT))
-    from NTT_modeling.IntType import IntType
-    from NTT_modeling.ButterflyScheme import GoldilocksSlice64
-    from NTT_modeling.NTT import FullyPipelinedNTT, calculateNttTwiddles
+    from operator_modeling.core.IntType import IntType
+    from operator_modeling.ntt.ButterflyScheme import GoldilocksSlice64
+    from operator_modeling.ntt.NTT import FullyPipelinedNTT, calculateNttTwiddles
 
     q, n = 2**64 - 2**32 + 1, 128
     L    = int(log2(n))
@@ -85,7 +85,7 @@ def main() -> int:
     # Empirical verification with random s130 testvectors
     # ------------------------------------------------------------------
     import random
-    from NTT_modeling.NTT import verifyNtt
+    from operator_modeling.ntt.NTT import verifyNtt
     BATCH = 1000
     SEED  = 0
     print(f"\n=== verifyNtt with {BATCH} random s130 testvectors ===")

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""build_bank.py — bridge NTT_modeling and versal_arith.
+"""build_bank.py — bridge operator_modeling and versal_arith.
 
 Generates a bank of N parallel constant multipliers. Designed for
 NTT/INTT pre-twist and post-twist banks (``x[i] · ψ^i``-style
@@ -86,17 +86,17 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-NTT_MODELING_DIR = PROJECT_ROOT / "NTT_modeling"
+NTT_MODELING_DIR = PROJECT_ROOT / "operator_modeling"
 VERSAL_DIR = PROJECT_ROOT / "versal_arith"
 DEFAULT_XLSX = PROJECT_ROOT / "twiddles.xlsx"
 DEFAULT_WORK_DIR = PROJECT_ROOT / "work"
 
 # ---------------------------------------------------------------------------
-# NAF parsing — pulled in from NTT_modeling.utils so we don't need Sage
+# NAF parsing — pulled in from operator_modeling.core.utils so we don't need Sage
 # ---------------------------------------------------------------------------
 
 sys.path.insert(0, str(PROJECT_ROOT))
-from NTT_modeling.utils import parseNafExpr  # noqa: E402
+from operator_modeling.core.utils import parseNafExpr  # noqa: E402
 
 
 def naf_str_to_int(s: str) -> int:

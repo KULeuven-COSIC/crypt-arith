@@ -200,7 +200,7 @@ def resolveBackend(backend: str, moduleStem: str, hwEntry: str, simEntry: str):
     except ImportError as e:
         raise ImportError(
             f'{backend} backend: cannot import {package}.{moduleStem} ({e}). '
-            f'versal_arith/ must be on sys.path — importing any NTT_modeling '
+            f'versal_arith/ must be on sys.path — importing any operator_modeling '
             f'module arranges that.'
         ) from e
     try:

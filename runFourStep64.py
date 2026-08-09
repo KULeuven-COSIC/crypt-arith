@@ -78,7 +78,7 @@ def load_bank(IntType) -> tuple[list, list[int]]:
     pre-twist bank. The constants are what the RTL actually multiplies by —
     congruent to psi^i mod q but not equal to it, since the generator
     NAF-lifts them."""
-    from NTT_modeling.IntType import loadBoundsJson
+    from operator_modeling.core.IntType import loadBoundsJson
 
     if not BANK_BOUNDS.is_file():
         raise SystemExit(
@@ -112,8 +112,8 @@ def build_instance(name: str, twiddles, bounds: list,
     Defaults to the forward GS pipeline used by this harness;
     ``runFourStep64Inverse.py`` reuses it with butterflyType='CT',
     inverse=True for the four-step's inverse half."""
-    from NTT_modeling.ButterflyScheme import GoldilocksSlice64
-    from NTT_modeling.NTT import FullyPipelinedNTT, FullyPipelinedINTT
+    from operator_modeling.ntt.ButterflyScheme import GoldilocksSlice64
+    from operator_modeling.ntt.NTT import FullyPipelinedNTT, FullyPipelinedINTT
 
     L = int(log2(N))
     klass = FullyPipelinedINTT if inverse else FullyPipelinedNTT
@@ -163,7 +163,7 @@ def verify_composed_negacyclic(inst, bounds: list, constants: list[int],
     workbook twiddle grid, and the pipeline wiring in one check — something
     neither block's standalone test covers.
     """
-    from NTT_modeling.NTT import referenceNtt
+    from operator_modeling.ntt.NTT import referenceNtt
 
     random.seed(SEED)
     xs = [[random.randint(0, (1 << BANK_IN_W) - 1) for _ in range(batch_size)]
@@ -236,8 +236,8 @@ def main() -> int:
     args = p.parse_args()
 
     sys.path.insert(0, str(PROJECT_ROOT))
-    from NTT_modeling.IntType import IntType
-    from NTT_modeling.NTT import loadTwiddlesFromXlsx, verifyNtt
+    from operator_modeling.core.IntType import IntType
+    from operator_modeling.ntt.NTT import loadTwiddlesFromXlsx, verifyNtt
 
     print("=" * 78)
     print(f"four-step NTT4096 building blocks — n={N}, q={Q}")

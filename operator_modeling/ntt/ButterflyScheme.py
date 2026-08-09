@@ -1,9 +1,9 @@
 from __future__ import annotations
 import os as _os
 import sys as _sys
-from .IntType import IntType
+from ..core.IntType import IntType
 from abc import ABC, abstractmethod
-from .utils import (
+from ..core.utils import (
     nafTermsCount, nafTermsModulusLift,
     vectorAdd, vectorSub, vectorLshift, vectorSlice, vectorConst, vectorBitWidth,
 )
@@ -11,7 +11,7 @@ from .utils import (
 # versal_arith is a sibling project, not a Python package (no top-level __init__.py),
 # so we add its directory to sys.path on demand. Both the shared spec dataclasses
 # and the rtl_gen butterfly generator are imported through that path.
-_versalArithDir = _os.path.normpath(_os.path.join(_os.path.dirname(__file__), '..', 'versal_arith'))
+_versalArithDir = _os.path.normpath(_os.path.join(_os.path.dirname(__file__), '..', '..', 'versal_arith'))
 if _versalArithDir not in _sys.path:
     _sys.path.append(_versalArithDir)
 from butterfly_spec import ButterflyOperatorSpec, SliceTerm

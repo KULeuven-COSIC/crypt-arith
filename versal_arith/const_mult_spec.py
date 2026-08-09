@@ -3,7 +3,7 @@
 `ConstMultOperatorSpec` and `ConstMultBankSpec` are pure-data dataclasses shared
 between two consumers:
 
-  - `NTT_modeling.ConstMultScheme.NafConstMult.getOperatorInterface` populates a
+  - `operator_modeling.multiplier.ConstMultScheme.NafConstMult.getOperatorInterface` populates a
     spec from a model whose input bound is already set, so the output width,
     signedness and implementation strategy are all known.
 

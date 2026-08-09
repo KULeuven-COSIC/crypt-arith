@@ -4,6 +4,8 @@ import random
 from math import log2
 from .Butterfly import Butterfly
 from .ButterflyScheme import ButterflyScheme
+from .NTTScheme import (FullyPipelinedGrid, NTTScheme, butterflyToMems,
+                        memToButterfly)
 from ..core.utils import bitReverse
 from ..core.IntType import IntType
 
@@ -13,74 +15,59 @@ from ..core.IntType import IntType
 from ntt_spec import NTTOperatorSpec, InterStageWire
 
 
-def butterflyToMems(p: int, stride: int) -> tuple[int, int]:
-    '''For a butterfly at physical position p in a stage with butterfly stride `stride`, return (memA, memB): the in-place memory positions its two inputs/outputs occupy.'''
-    low = p & (stride - 1)
-    high = p >> (stride.bit_length() - 1)
-    mA = high * (stride << 1) + low
-    return mA, mA + stride
-
-
-def memToButterfly(m: int, stride: int) -> tuple[int, str]:
-    '''For memory position m at the boundary after a stage whose butterflies have stride `stride`, return (butterflyIndex, port): which butterfly produced this position and on which output port.'''
-    bitPos = stride.bit_length() - 1
-    low = m & (stride - 1)
-    bit = (m >> bitPos) & 1
-    high = m >> (bitPos + 1)
-    p = high * stride + low
-    return p, 'A' if bit == 0 else 'B'
 
 
 class FullyPipelinedNTT():
-    def __init__(self, name: str, n: int, q: int, butterflyType: str, twiddles: list[list[int | list[tuple[int, int]]]], negacyclic: bool = False):
-        self.name = name
-        if n <= 0:
-            raise ValueError(f"dimension n must be a positive number, got {n} instead")
-        elif n & (n - 1) != 0:
-            raise ValueError(f"dimension n must be a power of 2, got {n} instead")
-        else:
-            self.n = n
-        if q <= 0:
-            raise ValueError(f"q must be a positive number, got {q} instead")
-        else:
-            self.q = q
-        if not isinstance(butterflyType, str):
-            raise TypeError(f"butterflyType must be str, got {type(butterflyType)} instead")
-        elif butterflyType == 'CT' or butterflyType == 'GS':
-            self.butterflyType = butterflyType
-        else:
-            raise ValueError(f"butterflyType must be 'CT' or 'GS', got {butterflyType} instead")
-        if not isinstance(twiddles, list):
-            raise TypeError(f"twiddles must be a list of layer list containing int or naf tuples, got {type(twiddles)} instead")
-        self.twiddles = twiddles
-        self.negacyclic = negacyclic
+    '''An NTT pipeline: natural-order inputs and outputs over a butterfly network.
 
-        L = int(log2(n))
-        self.butterflies: list[list[Butterfly]] = []
-        for layerIndex in range(L):
-            if self.butterflyType == 'CT':
-                strideThis = 1 << layerIndex                # doubles each stage
-                stridePrev = strideThis >> 1
-            else:                                            # 'GS'
-                strideThis = 1 << (L - layerIndex - 1)      # halves each stage
-                stridePrev = strideThis << 1
-            layer: list[Butterfly] = []
-            for butterflyIndex in range(n // 2):
-                bfly = Butterfly(
-                    name=f"{self.name}_layer{layerIndex}_butterfly{butterflyIndex}",
-                    butterflyType=self.butterflyType,
-                    twiddle=self.twiddles[layerIndex][butterflyIndex],
-                )
-                if layerIndex > 0:
-                    mA, mB = butterflyToMems(butterflyIndex, strideThis)
-                    pA, portA = memToButterfly(mA, stridePrev)
-                    pB, portB = memToButterfly(mB, stridePrev)
-                    bfly.connectInTo(
-                        connectATo=(self.butterflies[layerIndex - 1][pA], portA),
-                        connectBTo=(self.butterflies[layerIndex - 1][pB], portB),
-                    )
-                layer.append(bfly)
-            self.butterflies.append(layer)
+    The network itself belongs to the **scheme** (`FullyPipelinedGrid`), which
+    builds it, wires it, and owns the stride and bit-reversal rules. This class
+    is the operator around it: natural-order I/O, the spec, and RTL emission.
+
+    That split is what lets a second architecture exist. A four-step or
+    iterative NTT is a different `NTTScheme`, not a different class here.
+
+    The constructor is unchanged, and so is `setScheme` — but `setScheme` is now
+    for *overriding* the butterfly schemes, not for supplying them. The grid
+    builds its own, which removes the identical `log2(n) x n/2` comprehension
+    that every caller used to write out by hand.
+    '''
+
+    def __init__(self, name: str, n: int, q: int, butterflyType: str, twiddles: list[list[int | list[tuple[int, int]]]], negacyclic: bool = False,
+                 scheme: 'NTTScheme | None' = None):
+        self.name = name
+        self.scheme = scheme if scheme is not None else FullyPipelinedGrid(
+            name=name, n=n, q=q, butterflyType=butterflyType,
+            twiddles=twiddles, negacyclic=negacyclic)
+        # Validation now lives in NTTScheme.__init__, which raises on a bad n,
+        # q, butterflyType or twiddles shape before any grid is built.
+
+    # The scheme is the single source of truth for topology; these read through
+    # to it so existing callers — including three that index `inst.butterflies`
+    # directly — keep working unchanged.
+    @property
+    def butterflies(self) -> list[list[Butterfly]]:
+        return self.scheme.butterflies
+
+    @property
+    def n(self) -> int:
+        return self.scheme.n
+
+    @property
+    def q(self) -> int:
+        return self.scheme.q
+
+    @property
+    def butterflyType(self) -> str:
+        return self.scheme.butterflyType
+
+    @property
+    def twiddles(self):
+        return self.scheme.twiddles
+
+    @property
+    def negacyclic(self) -> bool:
+        return self.scheme.negacyclic
 
     def getInputs(self, inputs: list[IntType] | list[list[int]]) -> None:
         '''Drive the first-stage butterfly input ports from `inputs`. The list is indexed by NTT memory position, in the layout the chosen scheme expects: bit-reversed natural order for CT (e.g. n=8: [x[0], x[4], x[2], x[6], x[1], x[5], x[3], x[7]]) and natural order for GS (e.g. n=8: [x[0], x[1], ..., x[7]]). Each first-stage butterfly's two memory slots are looked up via butterflyToMems and pulled from `inputs`.'''

@@ -109,8 +109,19 @@ class OperatorScheme(ABC):
         '''Frozen spec dataclass for the RTL generator.'''
 
     @abstractmethod
-    def emitRtl(self, name: str, run_dir, **kwargs) -> dict:
-        '''Generate RTL into `run_dir`; return the generator's metadata.'''
+    def latency(self, pipelineStages: int = 1) -> int:
+        '''Pipeline registers this scheme's hardware can absorb.
+
+        Three of the four schemes already had this; the butterfly's absence was
+        a gap rather than a design choice, and it is what `areaCost` and any
+        future cost-driven search need alongside area.
+        '''
+
+    # NOTE: `emitRtl` is deliberately NOT on this ABC. Generating files is the
+    # operator's job — it owns the ports, the sampling and the run directory —
+    # while a scheme only answers questions about arithmetic. See
+    # `core.Operator.Operator.emitRtl`, whose template absorbs the eight steps
+    # every hand-written implementation used to repeat.
 
     # ------------------------------------------------------------------
     # Shared batch length helper

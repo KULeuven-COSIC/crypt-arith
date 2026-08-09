@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from .OperatorScheme import resolveBackend, runInDir
 from .Signal import Signal
 
 
@@ -87,6 +88,70 @@ class Operator(ABC):
     def latency(self, pipelineStages: int = 1) -> int:
         '''Pipeline registers between this operator's inputs and its outputs.'''
 
+    # --- RTL emission: one template, four hooks -------------------------
+
+    def emitRtl(self, name: str, run_dir,
+                pipeline_stages: int = 1,
+                gen_testbench: bool = True,
+                test_size: int = 1000,
+                seed: int | None = None,
+                visualization: bool = False,
+                sanity_check_size: int = 8,
+                backend: str = 'hw',
+                **kwargs) -> dict:
+        '''Generate RTL into `run_dir`; return the generator's metadata.
+
+        The same eight steps for every operator: validate, build the spec,
+        obtain test data, resolve the backend, move into the run directory,
+        generate, re-check what landed, return. Only the four hooks below
+        differ between operators, and they are exactly where the hand-written
+        implementations genuinely diverged.
+        '''
+        if pipeline_stages < 1:
+            raise ValueError(
+                f'{self.name}.emitRtl: pipeline_stages must be >= 1, got '
+                f'{pipeline_stages} (reg_flag_list_gen divides by it)'
+            )
+
+        spec = self.getOperatorInterface(name, pipelineStages=pipeline_stages)
+
+        data: dict = {}
+        if gen_testbench:
+            data = self._prepareTestData(spec, test_size=test_size, seed=seed,
+                                         **kwargs)
+
+        moduleStem, hwEntry, simEntry = self._generatorTarget()
+        generate = resolveBackend(backend, moduleStem, hwEntry, simEntry)
+
+        meta = runInDir(run_dir, generate,
+                        spec=spec,
+                        pipeline_stages=pipeline_stages,
+                        gen_testbench=gen_testbench,
+                        visualization=visualization,
+                        **self._generatorKwargs(data))
+
+        if gen_testbench and sanity_check_size > 0:
+            self._sanityCheck(run_dir, spec, sanity_check_size)
+        return meta
+
     @abstractmethod
-    def emitRtl(self, name: str, run_dir, **kwargs) -> dict:
-        '''Generate RTL into `run_dir`; return the generator's metadata.'''
+    def _generatorTarget(self) -> tuple[str, str, str]:
+        '''`(moduleStem, hwEntryPoint, simEntryPoint)` for `resolveBackend`.'''
+
+    @abstractmethod
+    def _prepareTestData(self, spec, test_size: int, seed: int | None,
+                         **kwargs) -> dict:
+        '''Sample inputs and compute goldens. The generator never samples.'''
+
+    @abstractmethod
+    def _generatorKwargs(self, data: dict) -> dict:
+        '''Map the test data onto this generator's argument names.'''
+
+    def _sanityCheck(self, run_dir, spec, sampleSize: int) -> None:
+        '''Re-derive the on-disk goldens from the on-disk inputs and compare.
+
+        Default is to skip. Operators that can cheaply re-run their value path
+        over what was actually written should override — it catches
+        two's-complement encoding mistakes locally, before any simulator.
+        '''
+        return None

@@ -160,6 +160,7 @@ def main() -> None:
         raise SystemExit("--pipeline-stages must be >= 1")
 
     sys.path.insert(0, str(VERSAL_DIR))
+    from operator_modeling.multiplier.ConstMult import ConstMult
     from operator_modeling.multiplier.ConstMultScheme import NafConstMult, defaultModuleName
 
     aIn = parse_bound(args.aIn_bound)
@@ -199,7 +200,10 @@ def main() -> None:
         model.checkHeapArithmetic(testSize=min(args.test_size, 256), seed=args.seed)
         print("[build_cmult] bit-heap arithmetic verified against A*C")
 
-    meta = model.emitRtl(
+    # The scheme owns the arithmetic; the operator owns the ports and the
+    # emission. Driving through the operator is what a user script does too.
+    operator = ConstMult(name=module_name, scheme=model, sampling=args.sampling)
+    meta = operator.emitRtl(
         name=module_name,
         run_dir=run_dir,
         pipeline_stages=args.pipeline_stages,
@@ -208,7 +212,6 @@ def main() -> None:
         seed=args.seed,
         visualization=args.visualization,
         backend=args.backend,
-        sampling=args.sampling,
     )
 
     spec = model.getOperatorInterface(module_name)

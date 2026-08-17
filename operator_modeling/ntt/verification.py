@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 from sage.all import GF
 
 from ..core.IntType import IntType
+from ..core.OperatorScheme import sampleBound
 from ..core.utils import bitReverse
 from .NTT import memToButterfly
 
@@ -113,13 +114,27 @@ def _verifyImpl(instance: FullyPipelinedNTT, isInverse: bool, primitiveRoot: int
                 f'inputBound list must have length n={n}, got {len(inputBound)}'
             )
         bounds_per_natural = inputBound
-        natural = [[random.randint(b.minValue, b.maxValue) for _ in range(batchSize)]
-                   for b in bounds_per_natural]
+        # Must go through sampleBound, not a bare randint over [min, max]: a
+        # bound carries known-zero LSBs, and the emitted hardware has no bits in
+        # those positions at all. A sample with nonzero bits down there is a
+        # value the datapath cannot represent, so propagating it lands outside
+        # the predicted interval and the containment check fails on correct
+        # hardware. Primary NTT inputs have zeroLsbs == 0 and never noticed;
+        # inputs driven from a constant-multiplier bank routinely do not.
+        natural = [sampleBound(b, batchSize, random) for b in bounds_per_natural]
     else:
         if valueRange is None:
             valueRange = (-(2 ** 65), 2 ** 65 - 1)
         bounds_per_natural = [inputBound] * n
-        natural = [[random.randint(valueRange[0], valueRange[1]) for _ in range(batchSize)]
+        # `valueRange` overrides the bound's interval, but it cannot override the
+        # bound's known-zero LSBs — same unrepresentability argument as above, so
+        # snap the range onto that lattice. A no-op when zeroLsbs == 0, which
+        # keeps every existing caller sampling exactly the values it did before.
+        step = 1 << inputBound.zeroLsbs
+        lo = (-((-valueRange[0]) // step) if valueRange[0] < 0
+              else valueRange[0] // step)
+        hi = valueRange[1] // step
+        natural = [[random.randint(lo, hi) * step for _ in range(batchSize)]
                    for _ in range(n)]
 
     instance.getInputsNatural(bounds_per_natural)

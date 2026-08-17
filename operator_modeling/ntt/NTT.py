@@ -1,5 +1,4 @@
 from __future__ import annotations
-import os
 import random
 from math import log2
 from .Butterfly import Butterfly
@@ -166,36 +165,25 @@ class FullyPipelinedNTT():
 
     def saveBoundsToXlsx(self, path: str = 'NTT_bounds.xlsx', sheetName: str | None = None) -> None:
         '''Record the full per-butterfly per-stage output bound table to xlsx. Layout: row 1 holds "Layer 1".."Layer L" headers plus a trailing "<TYPE> BOUNDS" label; rows 2..n+1 hold per-port bounds in physical order (butterfly p port A on row 2+2p, port B on row 3+2p). Each cell contains str(bound) using IntType.__str__. Sheet name defaults to self.name so multiple NTT instances can record to the same workbook without colliding. If the file exists, the named sheet is replaced and other sheets are preserved; otherwise a new workbook is created.'''
-        import openpyxl
+        from ..core.utils import saveXlsxSheet
         if sheetName is None:
             sheetName = self.name
         L = len(self.butterflies)
 
-        if os.path.exists(path):
-            wb = openpyxl.load_workbook(path)
-            if sheetName in wb.sheetnames:
-                del wb[sheetName]
-            ws = wb.create_sheet(sheetName, 0)
-        else:
-            wb = openpyxl.Workbook()
-            ws = wb.active
-            ws.title = sheetName
-
-        for layerIdx in range(L):
-            ws.cell(row=1, column=layerIdx + 1, value=f'Layer {layerIdx + 1}')
-        ws.cell(row=1, column=L + 1, value=f'{self.butterflyType} BOUNDS')
-
+        headers = [f'Layer {i + 1}' for i in range(L)] + [f'{self.butterflyType} BOUNDS']
+        rows: list[list[str]] = []
         for p in range(self.n // 2):
+            aRow, bRow = [], []
             for layerIdx in range(L):
                 bfly = self.butterflies[layerIdx][p]
                 aBound = bfly.outputPortA.bound
                 bBound = bfly.outputPortB.bound
-                ws.cell(row=2 + 2 * p, column=layerIdx + 1,
-                        value=str(aBound) if aBound is not None else '')
-                ws.cell(row=3 + 2 * p, column=layerIdx + 1,
-                        value=str(bBound) if bBound is not None else '')
+                aRow.append(str(aBound) if aBound is not None else '')
+                bRow.append(str(bBound) if bBound is not None else '')
+            rows.append(aRow)
+            rows.append(bRow)
 
-        wb.save(path)
+        saveXlsxSheet(path, sheetName, rows, headers=headers)
 
     def getOperatorInterface(self, name: str) -> NTTOperatorSpec:
         '''Build an NTTOperatorSpec describing the entire pipeline at RTL granularity.

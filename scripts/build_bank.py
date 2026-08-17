@@ -96,7 +96,7 @@ DEFAULT_WORK_DIR = PROJECT_ROOT / "work"
 # ---------------------------------------------------------------------------
 
 sys.path.insert(0, str(PROJECT_ROOT))
-from operator_modeling.core.utils import parseNafExpr  # noqa: E402
+from operator_modeling.core.utils import loadXlsxColumn, parseNafExpr  # noqa: E402
 
 
 def naf_str_to_int(s: str) -> int:
@@ -147,20 +147,15 @@ def constants_from_xlsx(
 
     if sheet in ("PRE_TWIST", "POST_TWIST"):
         # Row 1 is a header. Cols A=integer, B="Most simple bin rep" NAF,
-        # C="Normal bit representation" NAF.
-        col_idx = {"raw": 0, "simple": 1}.get(column)
+        # C="Normal bit representation" NAF. A plain header-plus-column read,
+        # so it goes through the shared reader in core.utils.
+        col_idx = {"raw": 1, "simple": 2}.get(column)
         if col_idx is None:
             raise SystemExit(f"--column must be 'raw' or 'simple' for {sheet}")
-        out: list[int] = []
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            cell = row[col_idx]
-            if cell is None or cell == "":
-                continue
-            if column == "raw":
-                out.append(int(cell))
-            else:
-                out.append(naf_str_to_int(str(cell)))
-        return out
+        cells = loadXlsxColumn(str(xlsx), sheet, column=col_idx, headerRows=1)
+        if column == "raw":
+            return [int(cell) for cell in cells]
+        return [naf_str_to_int(str(cell)) for cell in cells]
 
     if sheet in ("PRETWIST", "POSTTWIST"):
         # NewTwiddles.xlsx layout: a single column A of raw mod-q residues,

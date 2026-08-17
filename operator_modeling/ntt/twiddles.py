@@ -6,6 +6,14 @@ including `scripts/build_butterfly.py`, which only ever wanted
 `loadTwiddlesFromXlsx`. The xlsx half needs openpyxl and no Sage; the
 computation half needs Sage and no openpyxl. Separating them lets each caller
 pay only for what it uses.
+
+That separation is only half-done here, because this module still imports Sage
+at the top for `calculateNttTwiddles`, so `loadTwiddlesFromXlsx` pays for it
+too. The spreadsheet *machinery* therefore lives in `core.utils`, which imports
+neither Sage nor (eagerly) openpyxl: anything that wants a NAF grid off a sheet
+can call `loadXlsxNafGrid` and skip this module entirely. What stays here is
+only the part that is genuinely about twiddles — the "Layer" header prefix and
+the one-column-per-stage orientation.
 '''
 from __future__ import annotations
 
@@ -13,8 +21,8 @@ from math import log2
 
 from sage.all import GF
 
-from ..core.utils import (bitReverse, formatNafExpr, nafTerms,
-                          nafTermsModulusLift, parseNafExpr)
+from ..core.utils import (loadXlsxHeaders, loadXlsxNafGrid,
+                          nafTermsModulusLift, saveXlsxNafGrid)
 
 def calculateNttTwiddles(modulus: int,
                          n: int,
@@ -138,79 +146,38 @@ def calculateInttTwiddles(modulus: int,
 
 
 def loadTwiddlesFromXlsx(path: str, sheetName: str = 'NTT_TWIDDLES') -> list[list[list[tuple[int, int]]]]:
-    '''Load twiddles from an xlsx file matching the project's layout. Row 1 holds "Layer 1".."Layer L" headers (an optional trailing label cell like "GS BUTTERFLIES!!!" is ignored). Rows 2..n/2+1 hold per-butterfly twiddles in physical top-to-bottom order, columns are stages. Each cell is either a plain integer or a NAF expression like "-2^91 + 2^43". Returns list[list[list[tuple[int, int]]]] of shape L x (n/2): every twiddle is materialized as a NAF list (matching calculateNttTwiddles output with useModulusLiftingNaf=True). Integer cells are converted via nafTerms.'''
-    import openpyxl
-    wb = openpyxl.load_workbook(path, data_only=True)
-    if sheetName not in wb.sheetnames:
-        raise ValueError(f'sheet {sheetName!r} not found in {path!r}; available sheets: {wb.sheetnames}')
-    ws = wb[sheetName]
+    '''Load twiddles from an xlsx file matching the project's layout. Row 1 holds "Layer 1".."Layer L" headers (an optional trailing label cell like "GS BUTTERFLIES!!!" is ignored). Rows 2..n/2+1 hold per-butterfly twiddles in physical top-to-bottom order, columns are stages. Each cell is either a plain integer or a NAF expression like "-2^91 + 2^43". Returns list[list[list[tuple[int, int]]]] of shape L x (n/2): every twiddle is materialized as a NAF list (matching calculateNttTwiddles output with useModulusLiftingNaf=True). Integer cells are converted via nafTerms.
 
-    L = 0
-    for c in range(1, ws.max_column + 1):
-        v = ws.cell(row=1, column=c).value
-        if isinstance(v, str) and v.strip().lower().startswith('layer'):
-            L = c
-        else:
-            break
-    if L == 0:
+    The layout rules themselves live in `core.utils` — this function only supplies
+    the two things that are specific to a twiddle grid: that the header prefix is
+    "Layer", and that the sheet is stored one column per stage.'''
+    if not loadXlsxHeaders(path, sheetName, prefix='layer'):
         raise ValueError(f'no "Layer N" headers found in row 1 of sheet {sheetName!r}')
-
-    halfN = 0
-    for r in range(2, ws.max_row + 1):
-        if ws.cell(row=r, column=1).value is None:
-            break
-        halfN = r - 1
-
-    twiddles: list[list[list[tuple[int, int]]]] = [[[] for _ in range(halfN)] for _ in range(L)]
-    for r in range(halfN):
-        for layerIdx in range(L):
-            v = ws.cell(row=r + 2, column=layerIdx + 1).value
-            if isinstance(v, int):
-                naf = nafTerms(v)
-            elif isinstance(v, str):
-                naf = parseNafExpr(v)
-            else:
-                raise ValueError(f'unexpected cell type at row {r + 2}, column {layerIdx + 1} in sheet {sheetName!r}: {v!r}')
-            # canonicalize term order to match calculateNttTwiddles (ascending exponent)
-            naf.sort(key=lambda t: t[1])
-            twiddles[layerIdx][r] = naf
-    return twiddles
+    return loadXlsxNafGrid(path, sheetName, headerPrefix='layer', transpose=True)
 
 
 def saveTwiddlesToXlsx(twiddles: list[list[int | list[tuple[int, int]]]], path: str, butterflyType: str, sheetName: str = 'NTT_TWIDDLES') -> None:
-    '''Save twiddles in the calculated format (output of calculateNttTwiddles) to an xlsx file in the project's layout. Row 1 is "Layer 1".."Layer L" plus a trailing "<TYPE> BUTTERFLIES!!!" label. Rows 2..n/2+1 hold per-butterfly twiddles, written as NAF expression strings (e.g. "-2^91 + 2^43" or "1") so that loadTwiddlesFromXlsx round-trips byte-for-byte. Integer inputs are converted to NAF via nafTerms before writing. If the target file exists the named sheet is replaced and other sheets are preserved; otherwise a new workbook is created.'''
-    import openpyxl
+    '''Save twiddles in the calculated format (output of calculateNttTwiddles) to an xlsx file in the project's layout. Row 1 is "Layer 1".."Layer L" plus a trailing "<TYPE> BUTTERFLIES!!!" label. Rows 2..n/2+1 hold per-butterfly twiddles, written as NAF expression strings (e.g. "2^43 - 2^91" or "1"). Integer inputs are converted to NAF via nafTerms before writing. If the target file exists the named sheet is replaced and other sheets are preserved; otherwise a new workbook is created.
+
+    Terms are written in the ascending-exponent order that `loadTwiddlesFromXlsx`
+    canonicalises to, so load -> save -> load is stable. Re-saving a hand-written
+    sheet whose terms run in another order (as `twiddles.xlsx` does, descending)
+    rewrites those cells into ascending order: the same value, different text.'''
     L = len(twiddles)
     if L == 0:
         raise ValueError('twiddles must have at least one stage')
     halfN = len(twiddles[0])
     if any(len(layer) != halfN for layer in twiddles):
         raise ValueError('all stages of twiddles must have the same length')
-
-    if os.path.exists(path):
-        wb = openpyxl.load_workbook(path)
-        if sheetName in wb.sheetnames:
-            del wb[sheetName]
-        ws = wb.create_sheet(sheetName, 0)
-    else:
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = sheetName
-
-    for layerIdx in range(L):
-        ws.cell(row=1, column=layerIdx + 1, value=f'Layer {layerIdx + 1}')
-    ws.cell(row=1, column=L + 1, value=f'{butterflyType} BUTTERFLIES!!!')
-
-    for r in range(halfN):
-        for layerIdx in range(L):
-            v = twiddles[layerIdx][r]
-            if isinstance(v, int):
-                naf = nafTerms(v)
-            elif isinstance(v, list):
-                naf = v
-            else:
+    # Checked here rather than in the writer so the error names the offending
+    # stage and butterfly; `nafToCell` only sees a lone value.
+    for layerIdx, layer in enumerate(twiddles):
+        for r, v in enumerate(layer):
+            if isinstance(v, bool) or not isinstance(v, (int, list)):
                 raise TypeError(f'unexpected twiddle value at stage {layerIdx}, butterfly {r}: {v!r}')
-            ws.cell(row=r + 2, column=layerIdx + 1, value=formatNafExpr(naf))
 
-    wb.save(path)
+    saveXlsxNafGrid(twiddles, path, sheetName,
+                    headers=[f'Layer {i + 1}' for i in range(L)],
+                    label=f'{butterflyType} BUTTERFLIES!!!',
+                    transpose=True)
 

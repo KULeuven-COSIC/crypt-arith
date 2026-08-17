@@ -181,14 +181,31 @@ inttN = FullyPipelinedINTT(name='inttN', n=n, q=q, butterflyType='GS',
 If you have a precomputed twiddle file (e.g. from an external tool), load it instead of regenerating:
 
 ```python
-from operator_modeling.ntt.NTT import loadTwiddlesFromXlsx, saveTwiddlesToXlsx
+from operator_modeling.ntt.twiddles import loadTwiddlesFromXlsx, saveTwiddlesToXlsx
 
 twiddles = loadTwiddlesFromXlsx('twiddles.xlsx', sheetName='NTT_TWIDDLES')
-# Round-trip clean:
 saveTwiddlesToXlsx(twiddles, '/tmp/round.xlsx', butterflyType='GS')
 ```
 
 The xlsx format: row 1 has `Layer 1 ... Layer L` headers + a `<TYPE> BUTTERFLIES!!!` label cell; rows 2..n/2+1 hold per-butterfly twiddles in physical top-to-bottom order, columns are stages. Each cell is either an integer or a NAF expression like `-2^91 + 2^43`.
+
+`load -> save -> load` is stable. Note it is stable, not text-preserving: the loader canonicalises each cell to ascending exponent order, so re-saving a hand-written sheet whose terms run descending (as `twiddles.xlsx` does) rewrites `-2^91 + 2^43` as `2^43 - 2^91` — same value, different text.
+
+#### The generic layer
+
+Every table this project keeps in xlsx shares one layout: a header row, one data row per index, one column per series, cells holding an integer or a NAF expression, and a blank marking the end. Those rules live in `operator_modeling.core.utils`, which imports neither Sage nor (eagerly) openpyxl — so a caller that just wants a grid off a sheet can skip `ntt.twiddles` and its Sage import entirely:
+
+```python
+from operator_modeling.core.utils import (loadXlsxSheet, loadXlsxColumn, loadXlsxHeaders,
+                                          saveXlsxSheet, loadXlsxNafGrid, saveXlsxNafGrid,
+                                          nafFromCell, nafToCell)
+
+consts = loadXlsxColumn('twiddles.xlsx', 'PRE_TWIST', column=2)   # header skipped
+grid   = loadXlsxNafGrid('twiddles.xlsx', 'NTT_TWIDDLES')         # parsed NAF cells
+saveXlsxSheet('out.xlsx', 'report', rows, headers=['a', 'b'])     # other sheets preserved
+```
+
+`loadTwiddlesFromXlsx` is then a two-line wrapper supplying the only twiddle-specific facts: the header prefix is `Layer`, and the sheet is stored one column per stage.
 
 ### 4g. Generating SystemVerilog for a single butterfly
 
@@ -308,6 +325,54 @@ and a per-butterfly debug mode — is at
 [`../scripts/README.md §2`](../scripts/README.md). The CLI is now a thin
 wrapper around `inst.emitRtl`.
 
+### 4i. The matrix transpose (four-step step four)
+
+`MatrixTranspose` is the corner turn between the two halves of a four-step NTT,
+and it is the **only stateful operator in the project**. For every other
+operator `compute()` is untimed and pushes the whole batch through at once; for
+this one **a `compute()` call is a beat**.
+
+```python
+from operator_modeling.transpose.MatrixTranspose import MatrixTranspose
+from operator_modeling.transpose.MatrixTransposeScheme import BehaviouralMatrixTranspose
+
+M  = 128
+op = MatrixTranspose(name='corner_turn',
+                     scheme=BehaviouralMatrixTranspose(name='ct', rows=M, cols=M))
+
+for beat in range(nBeats):
+    op.drive([Signal(bound[c], values[c]) for c in range(M)])   # one row, M lanes
+    if op.compute():                       # False for the first M beats
+        row = [p.signal for p in op.outputPorts]   # one transposed row
+```
+
+The contract: one row in every beat, reception never pauses; nothing out for the
+first `rows` beats; one transposed row out every beat after that, belonging to
+the matrix received during the previous `rows` beats. `compute()` returns
+whether it drove its outputs, and `reset()` returns it to an unprimed beat 0 —
+needed before re-running, since state persists.
+
+It moves whole `Signal`s and never inspects `values`, so **per-element bounds
+pass through unmerged** and a trial batch rides along untouched.
+
+Three members refuse to answer, deliberately. `areaCost()` raises because no
+storage architecture has been chosen and a `(LUT, DSP)` pair could not express a
+memory anyway — reporting zero would make the largest block in a four-step look
+free. `getOperatorInterface()` and `emitRtl()` raise because there is no
+`transpose_spec.py` and no `rtl_gen/transpose.py`. What it *can* state:
+
+| member | at M=128 | |
+|---|---|---|
+| `primingBeats()` | 128 | forced by the algorithm — transposed row 0 needs `X[127][0]` |
+| `throughputRowsPerBeat()` | 1 | |
+| `minimumStorageElements()` | 16384 | a **floor**, not a cost (2,129,920 bits at 130 b/element) |
+| `latency(pipelineStages)` | declared | `assumedLatency`, else `pipelineStages` — assumed, like `BehaviouralMult` |
+
+**Feeding a `FullyPipelinedNTT` from it** needs one step you have to write:
+`getInputsNatural` takes a single bound per port covering a whole batch, so the
+`rows` per-beat bounds collected from one output lane must be collapsed to one
+(min of `minValue`, max of `maxValue`, **min** of `zeroLsbs` — never max).
+
 ---
 
 ## 5. Output recording (bounds.xlsx)
@@ -331,8 +396,20 @@ Layout: row 1 has `Layer 1 ... Layer L` + a `<TYPE> BOUNDS` label; rows 2..n+1 h
 | `calculateInttTwiddles(...)` | Same shape; uses `ω^(-1)` (cyclic) or `ψ^(-1)` (negacyclic) as the base. 1/n scaling omitted. |
 | `referenceNtt(x, modulus, primitiveRoot=None, negacyclic=False)` | O(n²) reference NTT in natural order. For verification. |
 | `referenceIntt(y, modulus, primitiveRoot=None, negacyclic=False, divideByN=True)` | O(n²) reference INTT. Set `divideByN=False` to match `FullyPipelinedINTT` (which omits 1/n). |
-| `loadTwiddlesFromXlsx(path, sheetName='NTT_TWIDDLES')` | Read precomputed twiddles from spreadsheet. |
-| `saveTwiddlesToXlsx(twiddles, path, butterflyType, sheetName='NTT_TWIDDLES')` | Write twiddles to spreadsheet. |
+| `loadTwiddlesFromXlsx(path, sheetName='NTT_TWIDDLES')` | Read precomputed twiddles from spreadsheet. In `ntt.twiddles`. |
+| `saveTwiddlesToXlsx(twiddles, path, butterflyType, sheetName='NTT_TWIDDLES')` | Write twiddles to spreadsheet. Replaces that sheet, preserves the others. |
+
+**Generic xlsx layer** — in `core.utils`, no Sage, openpyxl imported lazily:
+
+| Function | Purpose |
+|-----------------|---------|
+| `loadXlsxSheet(path, sheet, headerRows=1, columns=None, firstColumn=1, stopOnBlank=True)` | Raw cell values, one list per row. |
+| `loadXlsxColumn(path, sheet, column=1, headerRows=1, stopOnBlank=True)` | One column as a flat list. |
+| `loadXlsxHeaders(path, sheet, headerRow=1, prefix=None)` | Header cells; `prefix` stops before a trailing free-text label. |
+| `saveXlsxSheet(path, sheet, rows, headers=None, position=0)` | Write rows; replace that sheet, preserve the rest, create the file if absent. |
+| `loadXlsxNafGrid(path, sheet, headerPrefix=None, transpose=False)` | Whole sheet parsed to NAF lists; blank trailing columns trimmed. |
+| `saveXlsxNafGrid(grid, path, sheet, headers=None, label=None, transpose=False)` | Inverse; `label` is the free-text cell past the last header. |
+| `nafFromCell(value, sort=True)` / `nafToCell(value)` | One cell ↔ NAF list. Ascending exponent is canonical. |
 | `verifyNtt(instance, primitiveRoot=None, batchSize=4, seed=None, ...)` | End-to-end forward NTT verification (mod-q + bound containment). |
 | `verifyIntt(instance, ...)` | Same for inverse. |
 | **Class** `FullyPipelinedNTT(name, n, q, butterflyType, twiddles, negacyclic=False)` | The pipelined NTT. Constructor wires the butterfly grid. |
@@ -395,6 +472,23 @@ Layout: row 1 has `Layer 1 ... Layer L` + a `<TYPE> BOUNDS` label; rows 2..n+1 h
 | `SimpleInputPort(name, bound=None, testVector=None)` | Input port. |
 | `SimpleOutputPort(name, bound=None, testVector=None)` | Output port. `.push()` propagates both `bound` and `testVector` to connected input ports. |
 | `.connect()`, `.disconnectPort()`, `.disconnectAllPorts()` | Topology management. |
+
+### `operator_modeling.transpose`
+
+| Item | Purpose |
+|------|---------|
+| **Class** `MatrixTransposeScheme(name, rows, cols)` | ABC. Owns the transpose and the declared port contract. `_BOUND_ATTRS`/`_VALUE_ATTRS` empty — it holds a `rows × cols` table, not one scalar per slot. |
+| `.transposeTable(table, attr='table')` | The single place the index swap is written; `propagateBound`, `propagateValue` and the operator all route through it. |
+| `.propagateBound()` / `.propagateValue()` | Per-element tables, transposed. Nothing merged. |
+| **Class** `BehaviouralMatrixTranspose(name, rows, cols, assumedLatency=None)` | Continuous-reception corner turn. Square only. |
+| `.primingBeats()` / `.throughputRowsPerBeat()` / `.minimumStorageElements()` | The contract it can state. The last is a floor, not a cost. |
+| `.areaCost()` / `.getOperatorInterface()` | **Raise** — no storage architecture chosen, no spec dataclass exists. |
+| **Class** `MatrixTranspose(name, scheme)` | `cols` input lanes, `rows` output lanes. The project's only stateful operator. |
+| `.compute() -> bool` | **One beat.** Returns whether the outputs were driven; `False` for the first `rows` calls. |
+| `.reset()` | Back to unprimed beat 0. Needed before re-running. |
+| `.outputValid` / `.beat` | Whether the next `compute()` drives, and position in the period. |
+| `.readRow()` | The transposed row currently on the output lanes. |
+| `.emitRtl()` | **Raises** — `rtl_gen/transpose.py` does not exist. |
 
 ---
 

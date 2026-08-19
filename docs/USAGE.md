@@ -327,10 +327,15 @@ wrapper around `inst.emitRtl`.
 
 ### 4i. The matrix transpose (four-step step four)
 
-`MatrixTranspose` is the corner turn between the two halves of a four-step NTT,
-and it is the **only stateful operator in the project**. For every other
-operator `compute()` is untimed and pushes the whole batch through at once; for
-this one **a `compute()` call is a beat**.
+`MatrixTranspose` is the corner turn between the two halves of a four-step NTT.
+Its batch carries **whole stacked matrices**: a batch of `T * rows`, with slot
+`b = t*rows + r` holding row `r` of matrix `t`, so
+
+```
+out[c].values[t*rows + r] == in[r].values[t*rows + c]
+```
+
+and at `T = 1` that is the plain matrix transpose.
 
 ```python
 from operator_modeling.transpose.MatrixTranspose import MatrixTranspose
@@ -340,20 +345,19 @@ M  = 128
 op = MatrixTranspose(name='corner_turn',
                      scheme=BehaviouralMatrixTranspose(name='ct', rows=M, cols=M))
 
-for beat in range(nBeats):
-    op.drive([Signal(bound[c], values[c]) for c in range(M)])   # one row, M lanes
-    if op.compute():                       # False for the first M beats
-        row = [p.signal for p in op.outputPorts]   # one transposed row
+op.drive([Signal(bound[r], values[r]) for r in range(M)])   # batch = T*M
+op.compute()
+out = op.read()
 ```
 
-The contract: one row in every beat, reception never pauses; nothing out for the
-first `rows` beats; one transposed row out every beat after that, belonging to
-the matrix received during the previous `rows` beats. `compute()` returns
-whether it drove its outputs, and `reset()` returns it to an unprimed beat 0 —
-needed before re-running, since state persists.
+**The batch length must be a multiple of `rows`** — the only such constraint in
+the project, because here the batch axis carries the row index as well as the
+trial index. `B % rows != 0` raises, naming both numbers.
 
-It moves whole `Signal`s and never inspects `values`, so **per-element bounds
-pass through unmerged** and a trial batch rides along untouched.
+**Bounds are per port, not per element.** Output lane `c` draws from every input
+lane as `r` sweeps, so every output bound is `IntType.union` of every input
+bound. That costs nothing when the lanes agree (as they do between the two halves
+of a four-step) and is a real widening when they do not.
 
 Three members refuse to answer, deliberately. `areaCost()` raises because no
 storage architecture has been chosen and a `(LUT, DSP)` pair could not express a
@@ -363,15 +367,31 @@ free. `getOperatorInterface()` and `emitRtl()` raise because there is no
 
 | member | at M=128 | |
 |---|---|---|
-| `primingBeats()` | 128 | forced by the algorithm — transposed row 0 needs `X[127][0]` |
+| `primingBeats()` | 128 | hardware latency, **declared** — this model is untimed, so nothing here demonstrates it |
 | `throughputRowsPerBeat()` | 1 | |
 | `minimumStorageElements()` | 16384 | a **floor**, not a cost (2,129,920 bits at 130 b/element) |
 | `latency(pipelineStages)` | declared | `assumedLatency`, else `pipelineStages` — assumed, like `BehaviouralMult` |
 
-**Feeding a `FullyPipelinedNTT` from it** needs one step you have to write:
-`getInputsNatural` takes a single bound per port covering a whole batch, so the
-`rows` per-beat bounds collected from one output lane must be collapsed to one
-(min of `minValue`, max of `maxValue`, **min** of `zeroLsbs` — never max).
+### 4j. Connecting operators
+
+Every `Operator` — including `FullyPipelinedNTT`, which is one — can be wired to
+the next without an index loop:
+
+```python
+bank.connectOutputsTo(NTT128_A)      # 128 lanes, positionally
+NTT128_B.connectInputsFrom(transpose)
+bank.compute()                        # push() lands directly on the NTT's ports
+NTT128_A.compute()                    # no getInputsNatural needed
+```
+
+Counts must match exactly; a mismatch raises with both numbers. These connect one
+operator to one operator — fanning an NTT out to 128 separate `Multiplier`s is
+still a loop, because that is 128 operators.
+
+`FullyPipelinedNTT.inputPorts` / `.outputPorts` are the boundary butterflies' own
+ports in natural order — views, not copies, so there is nothing to copy across
+after an upstream `push()`. `getInputsNatural` / `getOutputsNatural` still work
+and are thin wrappers over the same lists.
 
 ---
 
@@ -479,15 +499,14 @@ Layout: row 1 has `Layer 1 ... Layer L` + a `<TYPE> BOUNDS` label; rows 2..n+1 h
 |------|---------|
 | **Class** `MatrixTransposeScheme(name, rows, cols)` | ABC. Owns the transpose and the declared port contract. `_BOUND_ATTRS`/`_VALUE_ATTRS` empty — it holds a `rows × cols` table, not one scalar per slot. |
 | `.transposeTable(table, attr='table')` | The single place the index swap is written; `propagateBound`, `propagateValue` and the operator all route through it. |
-| `.propagateBound()` / `.propagateValue()` | Per-element tables, transposed. Nothing merged. |
+| `.propagateBound()` | One bound per output lane: `IntType.union` of every input bound. |
+| `.propagateValue()` | One batch per output lane, each stacked matrix transposed. |
 | **Class** `BehaviouralMatrixTranspose(name, rows, cols, assumedLatency=None)` | Continuous-reception corner turn. Square only. |
 | `.primingBeats()` / `.throughputRowsPerBeat()` / `.minimumStorageElements()` | The contract it can state. The last is a floor, not a cost. |
 | `.areaCost()` / `.getOperatorInterface()` | **Raise** — no storage architecture chosen, no spec dataclass exists. |
-| **Class** `MatrixTranspose(name, scheme)` | `cols` input lanes, `rows` output lanes. The project's only stateful operator. |
-| `.compute() -> bool` | **One beat.** Returns whether the outputs were driven; `False` for the first `rows` calls. |
-| `.reset()` | Back to unprimed beat 0. Needed before re-running. |
-| `.outputValid` / `.beat` | Whether the next `compute()` drives, and position in the period. |
-| `.readRow()` | The transposed row currently on the output lanes. |
+| `.transposeBatches(lanes)` | The single place the index swap is written; `propagateValue` and the operator both route through it. |
+| `.matrixCount(batchSize)` | Enforces `batchSize % rows == 0` and returns `T`. |
+| **Class** `MatrixTranspose(name, scheme)` | `rows` input lanes, `cols` output lanes. Stateless and batch-at-once, like every other operator. |
 | `.emitRtl()` | **Raises** — `rtl_gen/transpose.py` does not exist. |
 
 ---

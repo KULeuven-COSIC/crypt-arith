@@ -3,41 +3,31 @@
     scheme = BehaviouralMatrixTranspose(name='t', rows=128, cols=128)
     op     = MatrixTranspose(name='corner_turn', scheme=scheme)
 
-    for beat in range(rows):                    # priming: nothing comes out
-        op.drive([Signal(b, v) for b, v in row(beat)])
-        op.compute()                            # -> False
+    op.drive([Signal(bound[r], values[r]) for r in range(128)])
+    op.compute()
+    out = op.read()
 
-    for beat in range(rows):                    # steady: one row in, one out
-        op.drive([Signal(b, v) for b, v in row(rows + beat)])
-        if op.compute():                        # -> True
-            transposedRow = [p.signal for p in op.outputPorts]
+A batch of `T * rows` is read as `T` stacked matrices, slot `b = t*rows + r`
+being row `r` of matrix `t`:
 
-**This is the project's first stateful operator.** Every other one is a pure
-function of its input ports, and `compute()` on them is untimed — the whole
-loaded batch goes through in a single call. A corner turn cannot work that way:
-its output at any moment depends on rows received earlier, so it needs a notion
-of *when*.
+    out[c].values[t*rows + r] == in[r].values[t*rows + c]
 
-It introduces that in the only place available: one `compute()` call is one
-beat, and state carries across calls. Two things follow, and both are why this
-shape is worth the deviation.
+At `T = 1` that is the plain matrix transpose. Keeping it batch-at-once is what
+lets it connect to the rest of the project through ports: `push()` overwrites
+rather than accumulates, so an operator that consumed one row per `compute()`
+could never be wired to one that reads a whole batch — every row but the last
+would be thrown away, silently. Reading whole matrices out of the batch removes
+that mismatch instead of guarding against it.
 
-The batch axis keeps its meaning. Everywhere in this project `Signal.values` is
-a batch of independent trials, and it still is here — the operator moves whole
-`Signal`s and never looks inside them, so a batch of T trials is transposed T
-times over with no interaction. Had `compute()` instead consumed a whole matrix
-per call, the batch axis would have had to carry the matrix's second dimension,
-and would have meant something different for this operator than for every other.
+The price is the one constraint in the project on batch length: it must be a
+multiple of `rows`, because the batch axis now carries the row index as well as
+the trial index. `MatrixTransposeScheme.matrixCount` is where that is enforced.
 
-And bounds stay per element. Since a whole `Signal` is buffered, the bound
-travels welded to the values it describes, and nothing inside this operator ever
-merges two bounds. (A caller feeding the emitted beats into a batch-at-once
-operator like `FullyPipelinedNTT` does have to collapse them, because
-`getInputsNatural` takes one bound per port — but that is the caller's boundary,
-not this one's.)
-
-`reset()` exists because state does. Re-running a populated operator without it
-resumes mid-period.
+Bounds cannot stay per element under that arrangement. A port carries one bound
+for its whole batch, and output lane `c` draws from every input lane as `r`
+sweeps, so every output bound is `IntType.union` of every input bound. In a
+four-step this costs nothing — the inter-stage bounds are identical — but it is
+a real widening when the input lanes differ.
 '''
 from __future__ import annotations
 
@@ -48,7 +38,7 @@ from .MatrixTransposeScheme import MatrixTransposeScheme
 
 
 class MatrixTranspose(Operator):
-    '''A corner turn as a connectable operator: `cols` lanes in, `rows` out.'''
+    '''A corner turn as a connectable operator: `rows` lanes in, `cols` out.'''
 
     def __init__(self, name: str = 'Undefined MatrixTranspose',
                  scheme: MatrixTransposeScheme | None = None):
@@ -56,13 +46,12 @@ class MatrixTranspose(Operator):
         if scheme is None:
             raise ValueError(f'{name}: MatrixTranspose requires a scheme')
         self.scheme = scheme
-        # One input lane per column of an arriving row, one output lane per
-        # column of a departing transposed row.
-        self._inputPorts = [SimpleInputPort(f'{name} Input Port c{c}')
-                            for c in range(scheme.cols)]
-        self._outputPorts = [SimpleOutputPort(f'{name} Output Port r{r}')
-                             for r in range(scheme.rows)]
-        self.reset()
+        # Input lanes are indexed by row, output lanes by column — see the
+        # formula above. Equal while the transpose is square.
+        self._inputPorts = [SimpleInputPort(f'{name} Input Port r{r}')
+                            for r in range(scheme.rows)]
+        self._outputPorts = [SimpleOutputPort(f'{name} Output Port c{c}')
+                             for c in range(scheme.cols)]
 
     @property
     def inputPorts(self) -> list:
@@ -73,78 +62,35 @@ class MatrixTranspose(Operator):
         return self._outputPorts
 
     # ------------------------------------------------------------------
-    # State
-    # ------------------------------------------------------------------
 
-    def reset(self) -> None:
-        '''Return to beat 0 with nothing in flight.
+    def compute(self) -> None:
+        '''Transpose every matrix the loaded batch carries.
 
-        Not on the `Operator` ABC, which assumes stateless operators. Call it
-        before re-running, or the next `compute()` resumes mid-period.
-        '''
-        #: The matrix currently being received, `rows x cols` of Signals,
-        #: indexed [beat][lane].
-        self._incoming: list[list[Signal | None]] = self._emptyMatrix()
-        #: The completed matrix currently being emitted, already transposed by
-        #: the scheme, so beat b is just row b of it. None while priming.
-        self._outgoing: list[list[Signal | None]] | None = None
-        self._beat: int = 0
-
-    def _emptyMatrix(self) -> list[list[Signal | None]]:
-        return [[None] * self.scheme.cols for _ in range(self.scheme.rows)]
-
-    @property
-    def outputValid(self) -> bool:
-        '''Whether the next `compute()` will drive the output ports.'''
-        return self._outgoing is not None
-
-    @property
-    def beat(self) -> int:
-        '''Position within the current `rows`-beat period.'''
-        return self._beat
-
-    # ------------------------------------------------------------------
-
-    def compute(self) -> bool:
-        '''Advance one beat. Returns whether the output ports were driven.
-
-        Accepts a row every beat without exception — reception never pauses —
-        and emits one transposed row per beat once a full matrix has arrived.
-        The first `rows` calls therefore return False and leave the output
-        ports untouched.
+        Bounds always; values too when every lane has them, so a sizing-only
+        pass works exactly as in `ConstMultBank.compute()`.
         '''
         signals = [p.signal for p in self._inputPorts]
         missing = [i for i, s in enumerate(signals) if s is None]
         if missing:
             raise ValueError(
                 f'{self.name}.compute: input lanes {missing[:8]}'
-                f'{"..." if len(missing) > 8 else ""} have no signal at beat '
-                f'{self._beat}. A corner turn consumes a whole row per beat, so '
-                f'every lane must be driven on every call.'
+                f'{"..." if len(missing) > 8 else ""} have no signal. A transpose '
+                f'consumes whole matrices, so every lane must be driven.'
             )
 
-        self._incoming[self._beat] = list(signals)
+        self.scheme.aIn = [s.bound for s in signals]
+        outBounds = self.scheme.propagateBound()
 
-        drove = self._outgoing is not None
-        if drove:
-            # `_outgoing` is already transposed, so beat b is simply its row b.
-            for r, port in enumerate(self._outputPorts):
-                port.signal = self._outgoing[self._beat][r]
-                if port.isConnected:
-                    port.push()
+        outValues = None
+        if all(s.values is not None for s in signals):
+            self.scheme.aInValues = [s.values for s in signals]
+            outValues = self.scheme.propagateValue()
 
-        self._beat += 1
-        if self._beat == self.scheme.rows:
-            # The scheme owns the index swap — the operator only decides *when*
-            # a matrix is complete, never how it is permuted.
-            self._outgoing = self.scheme.transposeTable(self._incoming, 'incoming')
-            self._incoming = self._emptyMatrix()
-            self._beat = 0
-        return drove
-
-    def readRow(self) -> list[Signal | None]:
-        '''The transposed row currently on the output ports, lane by lane.'''
-        return [p.signal for p in self._outputPorts]
+        for c, port in enumerate(self._outputPorts):
+            port.signal = Signal(outBounds[c],
+                                 outValues[c] if outValues is not None else None)
+            if port.isConnected:
+                port.push()
 
     # ------------------------------------------------------------------
 
@@ -158,8 +104,8 @@ class MatrixTranspose(Operator):
         return self.scheme.latency(pipelineStages)
 
     def primingBeats(self) -> int:
-        '''Beats before the first output. Demonstrated by `compute()`'s return
-        value, not merely claimed.'''
+        '''Beats of hardware latency before the first output row. Declared: this
+        model is batch-at-once and untimed, so nothing here demonstrates it.'''
         return self.scheme.primingBeats()
 
     def minimumStorageElements(self) -> int:

@@ -63,6 +63,32 @@ class IntType:
         maxValue = (1 << bitWidth) - 1
         return IntType(minValue, maxValue, zeroLsbs)
 
+    @staticmethod
+    def union(bounds) -> IntType:
+        """Smallest interval containing every bound in `bounds`.
+
+        Needed wherever one wire carries values that came from several different
+        sources — a matrix transpose's output lane draws from every input lane,
+        so its type has to cover all of them.
+
+        `zeroLsbs` takes the **minimum**, never the maximum. If one source
+        guarantees 39 zero low bits and another guarantees none, a wire carrying
+        both guarantees none. Claiming more is the failure fixed in ca98a3e: a
+        bound asserting zero bits the data does not have makes correct hardware
+        fall outside its own predicted interval.
+        """
+        bounds = list(bounds)
+        if not bounds:
+            raise ValueError('IntType.union: needs at least one bound')
+        for i, b in enumerate(bounds):
+            if not isinstance(b, IntType):
+                raise TypeError(
+                    f'IntType.union: element {i} is {type(b).__name__}, not IntType'
+                )
+        return IntType(min(b.minValue for b in bounds),
+                       max(b.maxValue for b in bounds),
+                       min(b.zeroLsbs for b in bounds))
+
     def __add__(self, other: IntType | int) -> IntType:
         if isinstance(other, int):
             other = IntType.fromConst(other)

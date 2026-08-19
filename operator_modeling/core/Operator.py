@@ -69,6 +69,34 @@ class Operator(ABC):
         '''Current payload of every output port, in index order.'''
         return [port.signal for port in self.outputPorts]
 
+    # --- wiring ------------------------------------------------------------
+
+    def connectOutputsTo(self, other: 'Operator') -> None:
+        '''Wire every output port of this operator to the matching input port
+        of `other`, positionally.
+
+        Saves writing the index loop by hand at every stage boundary, which for
+        a 128-lane pipeline is the difference between one line and three. Counts
+        must match exactly; a mismatch is a wiring mistake, not something to
+        pad or truncate around.
+
+        This connects one operator to one operator. Fanning an NTT out to 128
+        separate multipliers is still a loop, because that is 128 operators.
+        '''
+        mine, theirs = self.outputPorts, other.inputPorts
+        if len(mine) != len(theirs):
+            raise ValueError(
+                f'{self.name}.connectOutputsTo({other.name}): '
+                f'{len(mine)} output ports cannot drive {len(theirs)} input ports'
+            )
+        for out, inp in zip(mine, theirs):
+            out.connect(inp)
+
+    def connectInputsFrom(self, other: 'Operator') -> None:
+        '''Inverse of `connectOutputsTo`: wire `other`'s outputs into this
+        operator's inputs.'''
+        other.connectOutputsTo(self)
+
     # --- behaviour --------------------------------------------------------
 
     @abstractmethod

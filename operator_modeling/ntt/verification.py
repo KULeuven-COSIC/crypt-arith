@@ -141,22 +141,11 @@ def _verifyImpl(instance: FullyPipelinedNTT, isInverse: bool, primitiveRoot: int
     instance.getInputsNatural(natural)
     instance.compute()
 
-    # Read testVector directly from final-layer output ports in memory order, then
-    # permute to natural order. We can't use getOutputsNatural() here because
-    # getOutputs() prefers bound when both are set — and we set both above.
-    L = len(instance.butterflies)
-    strideLast = (n // 2) if instance.butterflyType == 'CT' else 1
-    pipelineOutMemoryOrder: list[list[int] | None] = [None] * n
-    for m in range(n):
-        p, port = memToButterfly(m, strideLast)
-        bfly = instance.butterflies[L - 1][p]
-        outPort = bfly.outputPortA if port == 'A' else bfly.outputPortB
-        pipelineOutMemoryOrder[m] = outPort.testVector
-    Llog = int(log2(n))
-    if instance.butterflyType == 'CT':
-        pipelineOutNatural = pipelineOutMemoryOrder
-    else:
-        pipelineOutNatural = [pipelineOutMemoryOrder[bitReverse(k, Llog)] for k in range(n)]
+    # Read testVector straight off the natural-order output ports. Not
+    # getOutputsNatural(), which prefers `bound` when both are set — and both are
+    # set above. The ports themselves are already in natural order, so there is
+    # no permutation to redo here.
+    pipelineOutNatural = [p.testVector for p in instance.outputPorts]
 
     modQFails = 0
     for b in range(batchSize):

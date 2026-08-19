@@ -5,6 +5,8 @@ from .Butterfly import Butterfly
 from .ButterflyScheme import ButterflyScheme
 from .NTTScheme import (FullyPipelinedGrid, NTTScheme, butterflyToMems,
                         memToButterfly)
+from ..core.Operator import Operator
+from ..core.Port import SimpleInputPort, SimpleOutputPort
 from ..core.utils import bitReverse
 from ..core.IntType import IntType
 
@@ -16,7 +18,7 @@ from ntt_spec import NTTOperatorSpec, InterStageWire
 
 
 
-class FullyPipelinedNTT():
+class FullyPipelinedNTT(Operator):
     '''An NTT pipeline: natural-order inputs and outputs over a butterfly network.
 
     The network itself belongs to the **scheme** (`FullyPipelinedGrid`), which
@@ -34,12 +36,105 @@ class FullyPipelinedNTT():
 
     def __init__(self, name: str, n: int, q: int, butterflyType: str, twiddles: list[list[int | list[tuple[int, int]]]], negacyclic: bool = False,
                  scheme: 'NTTScheme | None' = None):
-        self.name = name
+        super().__init__(name)
         self.scheme = scheme if scheme is not None else FullyPipelinedGrid(
             name=name, n=n, q=q, butterflyType=butterflyType,
             twiddles=twiddles, negacyclic=negacyclic)
         # Validation now lives in NTTScheme.__init__, which raises on a bad n,
         # q, butterflyType or twiddles shape before any grid is built.
+        self._buildPortTables()
+
+    # ------------------------------------------------------------------
+    # Natural-order port tables
+    # ------------------------------------------------------------------
+
+    def _buildPortTables(self) -> None:
+        '''Work out, once, which butterfly port each natural index reaches.
+
+        Two steps, both of which the scheme already knows how to answer:
+        turn the natural index into a memory slot (`inputNaturalToMemory` —
+        bit-reversed for CT, identity for GS), then turn the memory slot into a
+        butterfly and a port letter (`memToButterfly` at the scheme's boundary
+        stride). For n = 8:
+
+            GS                                  CT
+            x[0] -> mem 0 -> butterfly 0 A      x[0] -> mem 0 -> butterfly 0 A
+            x[1] -> mem 1 -> butterfly 1 A      x[1] -> mem 4 -> butterfly 2 A
+            x[4] -> mem 4 -> butterfly 0 B      x[4] -> mem 1 -> butterfly 0 B
+
+        That answer used to be re-derived from scratch in five places here and
+        one in `verification`, each re-deriving the stride and re-applying the
+        bit reversal. Now it is a list, and those places read the list. The
+        scheme's four topology methods, which nothing called, are what build it.
+        '''
+        n = self.n
+        L = len(self.butterflies)
+        scheme = self.scheme
+
+        self._inputPortsNatural: list = [None] * n
+        self._outputPortsNatural: list = [None] * n
+        # Per stage-0 / final-stage butterfly, the natural index on each port.
+        # This is exactly what the RTL spec's inputWiring / outputWiring are.
+        self._inputWiring: list[list[int | None]] = [[None, None] for _ in range(n // 2)]
+        self._outputWiring: list[list[int | None]] = [[None, None] for _ in range(n // 2)]
+
+        # Memory order too, because `getInputs` / `getOutputs` are indexed that
+        # way. Same ports, different index; both tables are views on the grid.
+        self._inputPortsMemory: list = [None] * n
+        self._outputPortsMemory: list = [None] * n
+
+        inStride = scheme.inputStride()
+        for i in range(n):
+            m = scheme.inputNaturalToMemory(i)
+            p, side = memToButterfly(m, inStride)
+            bfly = self.butterflies[0][p]
+            port = bfly.inputPortA if side == 'A' else bfly.inputPortB
+            self._inputPortsNatural[i] = port
+            self._inputPortsMemory[m] = port
+            self._inputWiring[p][0 if side == 'A' else 1] = i
+
+        # The scheme gives memory -> natural on the output side; invert it
+        # explicitly rather than leaning on bitReverse being its own inverse.
+        naturalOfMemory = [scheme.outputMemoryToNatural(m) for m in range(n)]
+        if sorted(naturalOfMemory) != list(range(n)):
+            raise ValueError(
+                f'{self.name}: scheme.outputMemoryToNatural is not a permutation'
+            )
+        memoryOfNatural = [0] * n
+        for m, k in enumerate(naturalOfMemory):
+            memoryOfNatural[k] = m
+
+        outStride = scheme.outputStride()
+        for k in range(n):
+            m = memoryOfNatural[k]
+            p, side = memToButterfly(m, outStride)
+            bfly = self.butterflies[L - 1][p]
+            port = bfly.outputPortA if side == 'A' else bfly.outputPortB
+            self._outputPortsNatural[k] = port
+            self._outputPortsMemory[m] = port
+            self._outputWiring[p][0 if side == 'A' else 1] = k
+
+        for i, port in enumerate(self._inputPortsNatural):
+            if port is None:
+                raise ValueError(f'{self.name}: natural input {i} reaches no port')
+        for k, port in enumerate(self._outputPortsNatural):
+            if port is None:
+                raise ValueError(f'{self.name}: natural output {k} reaches no port')
+
+    @property
+    def inputPorts(self) -> list:
+        '''The stage-0 butterfly input ports, in natural order x[0]..x[n-1].
+
+        These are the butterflies' own ports, not copies — so connecting an
+        upstream operator here and calling its `compute()` drives the pipeline
+        directly, with nothing to copy across afterwards.
+        '''
+        return list(self._inputPortsNatural)
+
+    @property
+    def outputPorts(self) -> list:
+        '''The final-stage butterfly output ports, in natural order.'''
+        return list(self._outputPortsNatural)
 
     # The scheme is the single source of truth for topology; these read through
     # to it so existing callers — including three that index `inst.butterflies`
@@ -68,46 +163,44 @@ class FullyPipelinedNTT():
     def negacyclic(self) -> bool:
         return self.scheme.negacyclic
 
-    def getInputs(self, inputs: list[IntType] | list[list[int]]) -> None:
-        '''Drive the first-stage butterfly input ports from `inputs`. The list is indexed by NTT memory position, in the layout the chosen scheme expects: bit-reversed natural order for CT (e.g. n=8: [x[0], x[4], x[2], x[6], x[1], x[5], x[3], x[7]]) and natural order for GS (e.g. n=8: [x[0], x[1], ..., x[7]]). Each first-stage butterfly's two memory slots are looked up via butterflyToMems and pulled from `inputs`.'''
-        if not isinstance(inputs, list):
-            raise TypeError(f'inputs must be a list, got {type(inputs)}')
-        if len(inputs) != self.n:
-            raise ValueError(f'inputs must have length n={self.n}, got {len(inputs)}')
+    def _drivePorts(self, ports: list, values, label: str) -> None:
+        '''Write a list of bounds or of value batches onto `ports`, positionally.
 
-        # Validate input mode: bound-mode (list[IntType]) or value-batch mode (list[list[int]]).
-        if all(isinstance(x, list) for x in inputs):
-            batchSize = len(inputs[0])
-            if any(len(v) != batchSize for v in inputs):
+        The single place either index order lands on the grid; `getInputs` hands
+        it the memory-order table and `getInputsNatural` the natural-order one.
+        '''
+        if not isinstance(values, list):
+            raise TypeError(f'{label} must be a list, got {type(values)}')
+        if len(values) != self.n:
+            raise ValueError(f'{label} must have length n={self.n}, got {len(values)}')
+
+        if all(isinstance(v, list) for v in values):
+            batchSize = len(values[0]) if values else 0
+            if any(len(v) != batchSize for v in values):
                 raise ValueError('all test-vector batches must have the same length; got mixed lengths in inputs')
-        elif not all(isinstance(x, IntType) for x in inputs):
+            for v in values:
+                if not all(isinstance(e, int) for e in v):
+                    raise TypeError('all elements of a test-vector batch must be int')
+            for port, v in zip(ports, values):
+                port.testVector = v
+        elif all(isinstance(v, IntType) for v in values):
+            for port, v in zip(ports, values):
+                port.bound = v
+        else:
             raise TypeError('inputs must be either list[IntType] or list[list[int]]')
 
-        stride0 = 1 if self.butterflyType == 'CT' else self.n // 2
-        for p in range(self.n // 2):
-            mA, mB = butterflyToMems(p, stride0)
-            self.butterflies[0][p].initializeInputs(inputA=inputs[mA], inputB=inputs[mB])
+    def getInputs(self, inputs: list[IntType] | list[list[int]]) -> None:
+        '''Drive the first-stage butterfly input ports from `inputs`. The list is indexed by NTT memory position, in the layout the chosen scheme expects: bit-reversed natural order for CT (e.g. n=8: [x[0], x[4], x[2], x[6], x[1], x[5], x[3], x[7]]) and natural order for GS (e.g. n=8: [x[0], x[1], ..., x[7]]). Each first-stage butterfly's two memory slots are looked up via butterflyToMems and pulled from `inputs`.'''
+        self._drivePorts(self._inputPortsMemory, inputs, 'inputs')
 
     def getInputsNatural(self, x: list[IntType] | list[list[int]]) -> None:
         '''Drive the first-stage inputs from a list given in NATURAL order x[0], x[1], ..., x[n-1]. Auto-permutes into the pipeline's memory layout: bit-reverses for CT (which expects bit-reversed memory at input) or passes through for GS (already natural at input).'''
-        if not isinstance(x, list):
-            raise TypeError(f'x must be a list, got {type(x)}')
-        if len(x) != self.n:
-            raise ValueError(f'x must have length n={self.n}, got {len(x)}')
-        L = int(log2(self.n))
-        if self.butterflyType == 'CT':
-            permuted = [x[bitReverse(m, L)] for m in range(self.n)]
-        else:
-            permuted = list(x)
-        self.getInputs(permuted)
+        self._drivePorts(self._inputPortsNatural, x, 'x')
 
     def getOutputsNatural(self) -> list[IntType] | list[list[int]]:
         '''Return the final-stage outputs in NATURAL order Y[0], Y[1], ..., Y[n-1] (or x[0], ..., x[n-1] for INTT). Auto-permutes from the pipeline's memory layout: pass-through for CT (output is already natural) or bit-reverses for GS (output is bit-reversed in memory).'''
-        L = int(log2(self.n))
-        raw = self.getOutputs()
-        if self.butterflyType == 'CT':
-            return raw
-        return [raw[bitReverse(k, L)] for k in range(self.n)]
+        return [p.bound if p.bound is not None else p.testVector
+                for p in self._outputPortsNatural]
 
     def setScheme(self, schemes: list[list[ButterflyScheme]]) -> None:
         '''Attach a ButterflyScheme to every butterfly. `schemes` is shaped log2(n) x n/2, mirroring the butterfly grid: schemes[layerIndex][butterflyIndex] is assigned to self.butterflies[layerIndex][butterflyIndex].scheme.'''
@@ -135,15 +228,8 @@ class FullyPipelinedNTT():
 
     def getOutputs(self) -> list[IntType] | list[list[int]]:
         '''Return the final-layer outputs in NTT memory-position order. Mirror of getInputs: outputs[m] is the value at memory slot m. Auto-dispatches per-port: if outputPort.bound is set it's used; otherwise outputPort.testVector. Result is None for any slot whose owning butterfly has not had compute() run yet. Return type is list[IntType] in bound mode and list[list[int]] in value-batch mode (mixed populations follow per-port).'''
-        L = len(self.butterflies)
-        strideLast = (self.n // 2) if self.butterflyType == 'CT' else 1
-        outputs: list = [None] * self.n
-        for m in range(self.n):
-            p, port = memToButterfly(m, strideLast)
-            bfly = self.butterflies[L - 1][p]
-            outPort = bfly.outputPortA if port == 'A' else bfly.outputPortB
-            outputs[m] = outPort.bound if outPort.bound is not None else outPort.testVector
-        return outputs
+        return [p.bound if p.bound is not None else p.testVector
+                for p in self._outputPortsMemory]
 
     def showBounds(self) -> None:
         '''Print a per-stage summary of output bounds: max bitWidth across the stage's butterflies, plus a representative IntType (the widest one). Quick at-a-glance view of how bounds evolve through the pipeline. Run after compute().'''
@@ -253,50 +339,28 @@ class FullyPipelinedNTT():
                 layerSpecs.append(bfly.scheme.getOperatorInterface(name=butterflyName))
             butterflySpecs.append(layerSpecs)
 
-        # Stage-0 routing in natural-order space. Mirrors getInputsNatural's
-        # permutation logic: CT bit-reverses the natural input before driving
-        # memory slots, GS passes through. Each natural-order x[i]'s width
-        # comes from the corresponding stage-0 butterfly port's bound, with no
-        # uniformity assumption.
-        stride0 = 1 if self.butterflyType == 'CT' else n // 2
-        inputWiring: list[tuple[int, int]] = []
+        # Stage-0 and final-stage routing in natural-order space, straight off
+        # the tables built in `_buildPortTables` — the same tables `inputPorts` /
+        # `outputPorts` expose, so the spec and the port view can never disagree
+        # about which natural index sits on which butterfly port. Widths are read
+        # per natural index from that index's own port, assuming no uniformity.
+        inputWiring: list[tuple[int, int]] = [tuple(w) for w in self._inputWiring]
         inputBitWidthsNatural: list[int] = [0] * n
         inputIsSignedNatural: list[bool] = [False] * n
-        for p in range(n // 2):
-            mA, mB = butterflyToMems(p, stride0)
-            if self.butterflyType == 'CT':
-                natA, natB = bitReverse(mA, L), bitReverse(mB, L)
-            else:
-                natA, natB = mA, mB
-            inputWiring.append((natA, natB))
-            aInBound = self.butterflies[0][p].inputPortA.bound
-            bInBound = self.butterflies[0][p].inputPortB.bound
-            inputBitWidthsNatural[natA] = aInBound.bitWidth
-            inputIsSignedNatural[natA] = aInBound.isSigned
-            inputBitWidthsNatural[natB] = bInBound.bitWidth
-            inputIsSignedNatural[natB] = bInBound.isSigned
+        for i, port in enumerate(self._inputPortsNatural):
+            inputBitWidthsNatural[i] = port.bound.bitWidth
+            inputIsSignedNatural[i] = port.bound.isSigned
 
-        # Final-stage routing in natural-order space. Mirrors getOutputsNatural:
-        # CT outputs are already natural, GS outputs are bit-reversed.
-        strideLast = (n // 2) if self.butterflyType == 'CT' else 1
-        outputWiring: list[tuple[int, int]] = []
+        outputWiring: list[tuple[int, int]] = [tuple(w) for w in self._outputWiring]
         outputBitWidthsNatural: list[int] = [0] * n
         outputIsSignedNatural: list[bool] = [False] * n
-        for p in range(n // 2):
-            mA, mB = butterflyToMems(p, strideLast)
-            if self.butterflyType == 'CT':
-                natA, natB = mA, mB
-            else:
-                natA, natB = bitReverse(mA, L), bitReverse(mB, L)
-            outputWiring.append((natA, natB))
-            aBound = self.butterflies[L - 1][p].outputPortA.bound
-            bBound = self.butterflies[L - 1][p].outputPortB.bound
-            if aBound is None or bBound is None:
-                raise ValueError(f'butterflies[{L-1}][{p}].outputPort{{A,B}}.bound is None — call compute() with bounds first')
-            outputBitWidthsNatural[natA] = aBound.bitWidth
-            outputIsSignedNatural[natA] = aBound.isSigned
-            outputBitWidthsNatural[natB] = bBound.bitWidth
-            outputIsSignedNatural[natB] = bBound.isSigned
+        for k, port in enumerate(self._outputPortsNatural):
+            if port.bound is None:
+                raise ValueError(
+                    f'natural output {k} has no bound — call compute() with bounds first'
+                )
+            outputBitWidthsNatural[k] = port.bound.bitWidth
+            outputIsSignedNatural[k] = port.bound.isSigned
 
         # Inter-stage wiring for layers 1..L-1. Replicates the connection logic from
         # FullyPipelinedNTT.__init__ (see NTT.py:299-323): use this layer's stride
@@ -345,29 +409,8 @@ class FullyPipelinedNTT():
         port has a testVector populated (call getInputsNatural([list[int]]*n)
         and compute() before invoking this).'''
         n = self.n
-        L = len(self.butterflies)
-        stride0 = 1 if self.butterflyType == 'CT' else n // 2
-        strideLast = (n // 2) if self.butterflyType == 'CT' else 1
-
-        inputByNatural: list[list[int] | None] = [None] * n
-        for p in range(n // 2):
-            mA, mB = butterflyToMems(p, stride0)
-            if self.butterflyType == 'CT':
-                natA, natB = bitReverse(mA, L), bitReverse(mB, L)
-            else:
-                natA, natB = mA, mB
-            inputByNatural[natA] = self.butterflies[0][p].inputPortA.testVector
-            inputByNatural[natB] = self.butterflies[0][p].inputPortB.testVector
-
-        outputByNatural: list[list[int] | None] = [None] * n
-        for p in range(n // 2):
-            mA, mB = butterflyToMems(p, strideLast)
-            if self.butterflyType == 'CT':
-                natA, natB = mA, mB
-            else:
-                natA, natB = bitReverse(mA, L), bitReverse(mB, L)
-            outputByNatural[natA] = self.butterflies[L - 1][p].outputPortA.testVector
-            outputByNatural[natB] = self.butterflies[L - 1][p].outputPortB.testVector
+        inputByNatural = [p.testVector for p in self._inputPortsNatural]
+        outputByNatural = [p.testVector for p in self._outputPortsNatural]
 
         for i in range(n):
             if inputByNatural[i] is None:
@@ -397,6 +440,40 @@ class FullyPipelinedNTT():
         goldenXNatural = [[inputByNatural[i][b] for i in range(n)] for b in range(testSize)]
         goldenYNatural = [[outputByNatural[i][b] for i in range(n)] for b in range(testSize)]
         return goldenXNatural, goldenYNatural
+
+    # --- Operator contract ------------------------------------------------
+
+    def areaCost(self) -> tuple[int, int]:
+        '''`(LUT, DSP)` summed over the grid, via the scheme.'''
+        return self.scheme.areaCost()
+
+    def latency(self, pipelineStages: int = 1) -> int:
+        '''Pipeline registers between the natural inputs and outputs.'''
+        return self.scheme.latency(pipelineStages)
+
+    # `Operator.emitRtl`'s template does not fit this operator: it passes a
+    # single `pipeline_stages` int where an NTT needs one per layer, and it
+    # samples its own test data where an NTT takes goldens from the already
+    # populated grid. `emitRtl` below overrides it, so these three hooks exist
+    # only to satisfy the ABC and should never be reached.
+
+    def _generatorTarget(self) -> tuple[str, str, str]:
+        raise NotImplementedError(
+            f'{self.name}: the NTT emits through its own emitRtl, which takes '
+            f'pipeline_stages_per_layer; the Operator template does not apply.'
+        )
+
+    def _prepareTestData(self, spec, test_size: int, seed: int | None,
+                         **kwargs) -> dict:
+        raise NotImplementedError(
+            f'{self.name}: NTT goldens come from the populated grid via '
+            f'_extractGoldensNatural, not from sampling here.'
+        )
+
+    def _generatorKwargs(self, data: dict) -> dict:
+        raise NotImplementedError(
+            f'{self.name}: the NTT emits through its own emitRtl.'
+        )
 
     def emitRtl(self,
                 topName: str,
@@ -531,33 +608,14 @@ def _sanityCheckNttTestvectors(inst: 'FullyPipelinedNTT', run_dir, spec, sample_
     xDecoded = [_decodePerSlotSigned(p) for p in xPacked[:nLines]]
     yDecoded = [_decodePerSlotUnsigned(p) for p in yPacked[:nLines]]
 
-    inputBoundsByNatural: list = [None] * n
-    stride0 = 1 if inst.butterflyType == 'CT' else n // 2
-    for p in range(n // 2):
-        mA, mB = butterflyToMems(p, stride0)
-        if inst.butterflyType == 'CT':
-            natA, natB = bitReverse(mA, L), bitReverse(mB, L)
-        else:
-            natA, natB = mA, mB
-        inputBoundsByNatural[natA] = inst.butterflies[0][p].inputPortA.bound
-        inputBoundsByNatural[natB] = inst.butterflies[0][p].inputPortB.bound
+    inputBoundsByNatural = [p.bound for p in inst.inputPorts]
 
     nInputs = [[xDecoded[b][i] for b in range(nLines)] for i in range(n)]
     inst.getInputsNatural(inputBoundsByNatural)
     inst.getInputsNatural(nInputs)
     inst.compute()
 
-    strideLast = (n // 2) if inst.butterflyType == 'CT' else 1
-    pipelineOutMemoryOrder: list = [None] * n
-    for m in range(n):
-        p, port = memToButterfly(m, strideLast)
-        bfly = inst.butterflies[L - 1][p]
-        outPort = bfly.outputPortA if port == 'A' else bfly.outputPortB
-        pipelineOutMemoryOrder[m] = outPort.testVector
-    if inst.butterflyType == 'CT':
-        pipelineOutNatural = pipelineOutMemoryOrder
-    else:
-        pipelineOutNatural = [pipelineOutMemoryOrder[bitReverse(k, L)] for k in range(n)]
+    pipelineOutNatural = [p.testVector for p in inst.outputPorts]
 
     mismatches = 0
     for b in range(nLines):

@@ -1,9 +1,11 @@
 import argparse
 import os
 import shutil
+from pathlib import Path
 
 from bitheap import BitHeap
 from counter import Counter
+from dsp_multiplier_runner import run_dsp_multiplier
 from heuristic import compressAll, formGPCChain, merge_last_stage
 from rtl_gen import (
     Bmult_RTL_gen,
@@ -48,6 +50,7 @@ Supported operators (-operator):
              file). Use this for any parallel constant-multiply array,
              including NTT pre-twist / post-twist banks.
   clean      Remove all generated files in the output directory
+  dspmult    DSP/LUT multiplier search and full-design RTL generation
 
 NAF modulus lifting (-modulus):
   Optional. By default the generator runs vanilla NAF on each constant.
@@ -75,11 +78,12 @@ Examples:
   python cli.py -operator cmultbank -txt_file_name constants.txt -width_a 24 \\
                                     -modulus 18446744069414584321
   python cli.py -operator clean
+  python cli.py -operator dspmult -width_a 64 -width_b 64 -budget 4 -rtl
 """)
 
     # --- Operator selection ---
     parser.add_argument("-operator", type=str, default="bmult",
-        help="operator to generate: cmp, bmult, cmult, cmultbank, or clean (default: bmult)")
+        help="operator to generate: cmp, bmult, cmult, cmultbank, clean, or dspmult (default: bmult)")
 
     # --- Common arguments ---
     parser.add_argument("-pipeline_stages", type=int, default=1,
@@ -132,6 +136,31 @@ Examples:
     parser.add_argument("-lift_beam", type=int, default=200,
         help="[cmult/cmultbank, with -modulus] beam width (default: 200)")
 
+    # --- DSP/LUT multiplier pipeline (dspmult) ---
+    parser.add_argument("-frontend", action="store_true",
+        help="[dspmult] run solution search and save a bundle")
+    parser.add_argument("-backend", action="store_true",
+        help="[dspmult] load/lower a solution and generate selected outputs")
+    parser.add_argument("-a_sign", choices=("signed", "unsigned"), default="signed",
+        help="[dspmult] signedness of operand A (default: signed)")
+    parser.add_argument("-b_sign", choices=("signed", "unsigned"), default="signed",
+        help="[dspmult] signedness of operand B (default: signed)")
+    parser.add_argument("-budget", type=int, default=None,
+        help="[dspmult frontend] DSP budget")
+    parser.add_argument("-bundle", type=Path, default=None,
+        help="[dspmult] solution bundle to read or write "
+             "(default: output_dir/dspmult/bundles/<solution>.json)")
+    parser.add_argument("-rtl", action="store_true",
+        help="[dspmult backend] generate the complete RTL project")
+    parser.add_argument("-evaluate", "-eval", action="store_true",
+        help="[dspmult backend] generate testbench and evaluation files")
+    parser.add_argument("-latency_budget", type=int, default=None,
+        help="[dspmult backend] maximum total pipeline latency")
+    parser.add_argument("-clock_period_ns", type=float, default=None,
+        help="[dspmult evaluation] explicit clock period in ns")
+    parser.add_argument("-seed", type=int, default=1,
+        help="[dspmult evaluation] random test-vector seed (default: 1)")
+
     args = parser.parse_args()
 
     # --- clean operator ---
@@ -144,7 +173,7 @@ Examples:
         exit(0)
 
     # Validate operator early so unknown names fail before any directory work.
-    valid_ops = {"cmp", "bmult", "cmult", "cmultbank"}
+    valid_ops = {"cmp", "bmult", "cmult", "cmultbank", "dspmult"}
     if args.operator not in valid_ops:
         parser.error(f"Unknown operator: {args.operator!r} (valid: {sorted(valid_ops)})")
 
@@ -172,11 +201,18 @@ Examples:
         run_name = args.sv_file_name
     elif args.operator == "cmultbank":
         run_name = "cmultbank"
+    else:
+        # dspmult manages its own bundles/ and rtl/ hierarchy via explicit
+        # paths in dsp_multiplier_runner.py; it must not chdir here.
+        run_name = None
 
-    # All generated files go into output_dir/run_name/
-    run_dir = os.path.join(args.output_dir, run_name)
-    os.makedirs(run_dir, exist_ok=True)
-    os.chdir(run_dir)
+    # The legacy generators write relative to output_dir/run_name/.  dspmult
+    # keeps its own bundles/ and rtl/ hierarchy using explicit paths.
+    run_dir = None
+    if run_name is not None:
+        run_dir = os.path.join(args.output_dir, run_name)
+        os.makedirs(run_dir, exist_ok=True)
+        os.chdir(run_dir)
 
     if args.operator == "bmult":
         Bmult_RTL_gen(width_a=args.width_a,
@@ -248,4 +284,8 @@ Examples:
                           lift_depth=args.lift_depth,
                           lift_beam=args.lift_beam)
 
-    print(f"\nOutput written to: {run_dir}/")
+    elif args.operator == "dspmult":
+        raise SystemExit(run_dsp_multiplier(args, parser))
+
+    if run_dir is not None:
+        print(f"\nOutput written to: {run_dir}/")

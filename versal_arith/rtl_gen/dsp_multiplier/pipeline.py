@@ -21,7 +21,7 @@ from dsp_multiplier.backend.delay_model import (
 )
 from dsp_multiplier.backend.schedule import align_latency, module_latency
 from dsp_multiplier.frontend.cost import describe_with_cost, sign_mode_map
-from dsp_multiplier.frontend.seed_tiles import build_static_seed_library, print_tile_latency
+from dsp_multiplier.frontend.seed_tiles import build_static_seed_library
 from dsp_multiplier.backend.reports import print_latency_report
 from dsp_multiplier.backend.lowering import build_ir
 from rtl_gen.dsp_multiplier.emit_hweval import write_hweval
@@ -74,7 +74,6 @@ def build_final_module(
     print(description)
 
     library = build_static_seed_library()
-    print_tile_latency(library)
 
     trace = []
     module = build_ir(
@@ -85,7 +84,6 @@ def build_final_module(
         trace=trace,
         sign_modes=sign_mode_map(node),
     )
-    print(f"T0 = {module_latency(module)}")
 
     print()
     print(ns_floor_report(module))
@@ -94,21 +92,6 @@ def build_final_module(
     print_ns_pareto_report(points)
 
     best = select_ns_point(points, latency_budget)
-    basis = (
-        "shortest critical path (no latency budget)"
-        if latency_budget is None
-        else f"best fmax within latency budget={latency_budget}"
-    )
-    print(
-        f"\nSelected point ({basis}): worst_ns={best.worst_ns:.3f} ns  "
-        f"fmax={best.fmax_mhz:.1f} MHz  latency={best.latency}"
-    )
-    for record in sorted(best.moved, key=lambda item: -abs(item.extra)):
-        print(
-            f"  {record.signal:>8} {record.kind:>9}  "
-            f"{record.old_latency}→{record.new_latency}  "
-            f"({record.old_ns:.3f}→{record.new_ns:.3f} ns)"
-        )
     # print(IR.dump(best.module))
 
     aligned = align_latency(best.module)
@@ -180,7 +163,7 @@ def generate_evaluation(
         # hweval style, and hence LFSR.sv, would be needed at all.
         filelist_path = out_dir / "filelist.f"
         if filelist_path.is_file():
-            rel = paths["lfsr"].relative_to(out_dir).as_posix()
+            rel = paths["lfsr"].relative_to(out_dir.resolve()).as_posix()
             existing = filelist_path.read_text(encoding="utf-8").splitlines()
             if rel not in existing:
                 with filelist_path.open("a", encoding="utf-8") as f:

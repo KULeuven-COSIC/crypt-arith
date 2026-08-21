@@ -132,8 +132,3 @@ def print_latency_report(root, module: IR.IRModule, **kwargs) -> None:
     """One call does it all: title + tree + FF overhead. Use this for everyday use."""
     print(f"\n=== Timing tree: total latency {module_latency(module)} cycles ===")
     print_latency_tree(root, module, **kwargs)
-
-    n = sum(1 for op in module.ops if isinstance(op, IR.Delay))
-    bits = sum(op.source.width * op.cycles
-               for op in module.ops if isinstance(op, IR.Delay))
-    print(f"\nAlignment: {n} delay chain(s), ~{bits} FF(s)")

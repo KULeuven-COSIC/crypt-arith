@@ -482,25 +482,13 @@ def floor_report(ops) -> str:
         return "No stretchable blocks -- every stage count in this pipeline is externally given."
 
     floor = d_floor(stretch)
-    active = active_blocks(stretch, floor)
     culprits = [op for op in stretch if abs(_min_delay(op) - floor) < 1e-9]
     names = ", ".join(op.result.name for op in culprits[:5])
     if len(culprits) > 5:
         names += f" and {len(culprits)} others"
 
-    idle = len(stretch) - len(active)
-    lines = [
-        f"Floor D_floor = {floor:.3f} ns ({fmax_hint(floor):.0f} MHz, excluding clock margin), "
-        f"pinned by {names}",
-        f"Active blocks {len(active)}/{len(stretch)}"
-        + (f" -- the other {idle} block(s) are already below the floor at their own L_min, nothing to move"
-           if idle else " -- every block still has room to stretch"),
-    ]
-    if active:
-        lines.append("The only leverage to break through this floor is: " +
-                     ", ".join(op.result.name for op in active) +
-                     "; adjusting anything else won't help.")
-    return "\n".join(lines)
+    return (f"Floor D_floor = {floor:.3f} ns ({fmax_hint(floor):.0f} MHz, excluding clock margin), "
+            f"pinned by {names}")
 
 
 def active_blocks(ops, floor: float | None = None) -> list:
@@ -838,9 +826,7 @@ def print_ns_pareto_report(points: list[NsParetoPoint]) -> None:
           f"the three-tier pruning only evaluates a little more than this many times: "
           f"each budget round asks for a new, genuinely-achievable worst-case delay, "
           f"and this just drops the ones that turned out equally fast but pricier in cycles)")
-    print(f"\n{'worst_ns':>9} {'fmax_mhz':>9} {'latency':>8}  blocks moved (may be spending extra cycles for Fmax, or discovering the original config was over-provisioned)")
+    print(f"\n{'worst_ns':>9} {'fmax_mhz':>9} {'latency':>8}")
     for p in points:
         mark = " <-floor" if abs(p.worst_ns - floor) < 1e-9 else ""
-        moved = ",".join(f"{r.signal}:{r.old_latency}->{r.new_latency}"
-                         for r in p.moved) or "none"
-        print(f"{p.worst_ns:9.3f} {p.fmax_mhz:9.1f} {p.latency:8d}{mark}  {moved}")
+        print(f"{p.worst_ns:9.3f} {p.fmax_mhz:9.1f} {p.latency:8d}{mark}")

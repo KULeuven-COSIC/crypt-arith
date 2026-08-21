@@ -53,8 +53,7 @@ def write_scoped_xdc_tcl(outdir: str | Path, *,
         # no compressor tree -> no GPC placement constraints -> no scoped tcl needed.
         # Don't write an empty file: a comment-only tcl left behind would
         # look like constraints had already been applied.
-        print(f"No xdc matching {patterns}, skipping scoped tcl generation. "
-              f"(did every bit heap go through the wrapper's direct addition path?)")
+        print(f"No xdc matching {patterns}, skipping scoped tcl generation. ")
         return None
 
 

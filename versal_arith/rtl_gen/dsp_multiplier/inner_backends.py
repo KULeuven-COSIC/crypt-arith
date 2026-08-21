@@ -5,7 +5,8 @@ SmallMult, delay_line).
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
+import io
 import os
 from pathlib import Path
 import tempfile
@@ -33,6 +34,15 @@ def _generator_workdir() -> Iterator[Path]:
             yield workdir
         finally:
             os.chdir(previous)
+
+@contextmanager
+def _quiet() -> Iterator[None]:
+    """Swallow stdout: compressor_RTL_gen's underlying heuristic/compressor
+    modules print their own progress chatter (LUT usage, pipeline-stage
+    counts, ...) that's noise from this per-block call site."""
+    with redirect_stdout(io.StringIO()):
+        yield
+
 
 def _write_sv(path: Path, body: list[str]) -> Path:
     """Write a .sv file with a timescale header."""
@@ -245,14 +255,15 @@ def _write_bitheap_inner(r: BlockRequest, sv_dir: Path, xdc_dir: Path
         descriptor.write_text(
             "".join(f"{h}\n" for h in heights), encoding="utf-8"
         )
-        compressor_RTL_gen(
-            txt_file_name=str(descriptor),
-            sv_file_name=r.inner_module_name,
-            compressor_module_name=r.inner_module_name,
-            tb_out_width=_cmp_out_width(cols),
-            reg_flag_list=reg_flags,
-            visualization=False, gen_testbench=False, test_size=1,
-        )
+        with _quiet():
+            compressor_RTL_gen(
+                txt_file_name=str(descriptor),
+                sv_file_name=r.inner_module_name,
+                compressor_module_name=r.inner_module_name,
+                tb_out_width=_cmp_out_width(cols),
+                reg_flag_list=reg_flags,
+                visualization=False, gen_testbench=False, test_size=1,
+            )
         sv, xdc = _copy_generated(workdir, sv_dir, xdc_dir)
 
     if not (sv_dir / f"{r.inner_module_name}.sv").is_file():

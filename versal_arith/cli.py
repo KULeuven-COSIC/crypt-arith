@@ -78,7 +78,7 @@ Examples:
   python cli.py -operator cmultbank -txt_file_name constants.txt -width_a 24 \\
                                     -modulus 18446744069414584321
   python cli.py -operator clean
-  python cli.py -operator dspmult -width_a 64 -width_b 64 -budget 4 -rtl
+  python cli.py -operator dspmult -width_a 256 -width_b 256 -budget 110 -rtl -eval
 """)
 
     # --- Operator selection ---

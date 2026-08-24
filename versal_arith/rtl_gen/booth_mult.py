@@ -6,7 +6,79 @@ from rtl_gen.utils import to_twos_complement_hex, width_expr
 from rtl_gen.compressor import reg_flag_list_gen, compressor_RTL_gen
 
 
-def Bmult_bitheap_RTL_gen(width_a: int, width_b: int, bitheap_list: list[int], out_reg: bool, file_name: str) -> None:
+
+def _boundary_lut6_2_init(init_o5: int, init_o6: int, shared_pin: int) -> int:
+    """Pack the two boundary partial-product functions of a Booth row into one LUT6_2.
+
+    The top column of a row depends only on the three Booth select bits and the
+    sign bit OPA[width_a-1], so its LUT5 is emitted with I3 and I4 carrying that
+    same signal -- a 4-input function occupying a 5-input primitive. Because it
+    shares all its inputs with the neighbouring LUT5, the pair needs only five
+    distinct signals and fits one LUT6_2 with I5 tied to 1'b1: O5 keeps the
+    neighbour verbatim (its pin order is already the merged one) and O6 carries
+    the boundary function re-expressed over the merged pins, where the shared
+    signal sits on `shared_pin` (3 or 4) and the other pin becomes a don't-care.
+
+    This is the form row 0 already uses at its own boundary (DD33DD33268C268C);
+    the other rows relied on a LUTNM group instead, which the placer does not
+    reliably honour for this pair.
+    """
+    def _src(k: int) -> int:
+        sel = (k >> shared_pin) & 1
+        return (k & 0b111) | (sel << 3) | (sel << 4)
+
+    o6 = 0
+    for k in range(32):
+        o6 |= ((init_o6 >> _src(k)) & 1) << k
+    merged = (o6 << 32) | init_o5
+    # Exhaustive equivalence check: both halves must reproduce the original LUT5s
+    # for every one of the 32 input combinations.
+    for k in range(32):
+        assert (merged >> k) & 1 == (init_o5 >> k) & 1
+        assert (merged >> (k + 32)) & 1 == (init_o6 >> _src(k)) & 1
+    return merged
+
+
+
+def _last_row_lut6_2_init(init_even: int, init_odd: int) -> int:
+    """Pack two adjacent partial-product bits of the final Booth row into one LUT6_2.
+
+    When OPB is the sign-extended operand, OPB[2i+1] == OPB[2i] in the last row, so
+    its Booth digit is -2*b[2i+1] + b[2i] + b[2i-1] = b[2i-1] - b[2i], which can never
+    reach +/-2. The x2-shifted operand bit is therefore dead: both LUT5 INITs collapse,
+    under I2 := I1, to the same 3-input function g(b[2i-1], b[2i], OPA[j]). Two adjacent
+    bits then need only four distinct signals and fit one LUT6_2 outright -- no LUTNM.
+
+    Merged pins: I0=OPB[2i-1] I1=OPB[2i] I2=OPA[j] I3=OPA[j+1] I4=1'b1 I5=1'b1,
+    with O5 -> col(2i+j) and O6 -> col(2i+j+1).
+
+    g is derived from the existing LUT5 INITs rather than written out, and both the
+    don't-care property and the agreement between the two INITs are asserted.
+    """
+    def _reduce(init: int, opa_pin: int) -> dict:
+        g = {}
+        for b_lo in (0, 1):
+            for b_hi in (0, 1):
+                for a in (0, 1):
+                    for other in (0, 1):
+                        i3, i4 = (a, other) if opa_pin == 3 else (other, a)
+                        v = (init >> (b_lo | b_hi << 1 | b_hi << 2 | i3 << 3 | i4 << 4)) & 1
+                        key = (b_lo, b_hi, a)
+                        # the other OPA bit must not matter once I2 is tied to I1
+                        assert g.setdefault(key, v) == v
+        return g
+
+    g = _reduce(init_even, 3)
+    assert g == _reduce(init_odd, 4)
+
+    init = 0
+    for k in range(64):
+        i0, i1, i2, i3, i5 = k & 1, (k >> 1) & 1, (k >> 2) & 1, (k >> 3) & 1, (k >> 5) & 1
+        init |= g[(i0, i1, i3 if i5 else i2)] << k
+    return init
+
+
+def Bmult_bitheap_RTL_gen(width_a: int, width_b: int, bitheap_list: list[int], out_reg: bool, file_name: str, b_extended: bool = False) -> None:
     left_vals = [0, width_a-1, width_b-1]
     for val in bitheap_list:
         left_vals.append(val-1)
@@ -98,6 +170,9 @@ module {file_name} (
         col_pointers[width_a+1] += 1
     # the rest of the rows
     for i in range(1, num_of_rows):
+        # In the final row a sign-extended OPB duplicates its top bit, collapsing every
+        # partial product to a 3-input function -- see _last_row_lut6_2_init.
+        last_row_reduced = b_extended and i == num_of_rows - 1
         RTL_str += f"""
     
     // the main part of row {i}"""
@@ -119,23 +194,60 @@ module {file_name} (
                 col_pointers[2*i+j+1] += 1
             elif j == 1:
                 pass
-            elif j == width_a:
+            elif j == width_a - 1:
+                # Boundary pair: this LUT5 and the degenerate one at j == width_a
+                # share all five of their signals, so they go in one LUT6_2 rather
+                # than two LUT5s held together by a LUTNM group.
+                if (width_a - 1) % 2 == 0:
+                    partner_init, shared_pin = 0x8EE896F0, 3
+                    pin_i3, pin_i4 = width_a - 1, width_a - 2
+                else:
+                    partner_init, shared_pin = 0x8E96E8F0, 4
+                    pin_i3, pin_i4 = width_a - 2, width_a - 1
+                merged_init = _boundary_lut6_2_init(partner_init, 0x7169170F, shared_pin)
                 RTL_str += f"""
-    LUT5 #(.INIT(32'h7169170F))
-    LUT5_row{i}_inst{j} (
-        .O (col{2*i+j}_wire{f"[{col_pointers[2*i+j]}]" if bitheap_list[2*i+j] > 1 else ""}),
+    LUT6_2 #(.INIT(64'h{merged_init:016X}))
+    LUT6_2_row{i}_inst{j} (
+        .O6(col{2*i+j+1}_wire{f"[{col_pointers[2*i+j+1]}]" if bitheap_list[2*i+j+1] > 1 else ""}),
+        .O5(col{2*i+j}_wire{f"[{col_pointers[2*i+j]}]" if bitheap_list[2*i+j] > 1 else ""}),
         .I0({"1'b0" if i == 0 else f"OPB[{2*i-1}]"}),
         .I1(OPB[{2*i}]),
         .I2(OPB[{2*i+1}]),
-        .I3(OPA[{width_a-1}]),
-        .I4(OPA[{width_a-1}]));
+        .I3(OPA[{pin_i3}]),
+        .I4(OPA[{pin_i4}]),
+        .I5(1'b1));
     """
                 col_pointers[2*i+j] += 1
+                col_pointers[2*i+j+1] += 1
+            elif j == width_a:
+                # folded into the LUT6_2 emitted at j == width_a - 1
+                pass
             elif j == width_a + 1:
                 RTL_str += f"""
     assign col{2*i+j}_wire{f"[{col_pointers[2*i+j]}]" if bitheap_list[2*i+j] > 1 else ""} = 1'b1;
     """
                 col_pointers[2*i+j] += 1
+            elif last_row_reduced and j % 2 == 0 and j + 1 <= width_a - 2:
+                # Final Booth row with OPB sign-extended: every bit is a 3-input
+                # function, so this bit and the next share one LUT6_2 outright.
+                merged_init = _last_row_lut6_2_init(0x8EE896F0, 0x8E96E8F0)
+                RTL_str += f"""
+    LUT6_2 #(.INIT(64'h{merged_init:016X}))
+    LUT6_2_row{i}_inst{j} (
+        .O6(col{2*i+j+1}_wire{f"[{col_pointers[2*i+j+1]}]" if bitheap_list[2*i+j+1] > 1 else ""}),
+        .O5(col{2*i+j}_wire{f"[{col_pointers[2*i+j]}]" if bitheap_list[2*i+j] > 1 else ""}),
+        .I0({"1'b0" if i == 0 else f"OPB[{2*i-1}]"}),
+        .I1(OPB[{2*i}]),
+        .I2(OPA[{j}]),
+        .I3(OPA[{j+1}]),
+        .I4(1'b1),
+        .I5(1'b1));
+    """
+                col_pointers[2*i+j] += 1
+                col_pointers[2*i+j+1] += 1
+            elif last_row_reduced and j % 2 == 1 and j <= width_a - 2:
+                # folded into the LUT6_2 emitted at j - 1
+                pass
             else:
                 if j % 2 == 0:
                     RTL_str += f"""
@@ -199,8 +311,13 @@ endmodule"""
 
     # generate the constraint files
     xdc_str = ""
+    # j == width_a-1 and j == width_a are now one LUT6_2, so the pairing stops
+    # two columns short of width_a.
     for i in range(1, num_of_rows):
-        for j in range(2, width_a, 2):
+        if b_extended and i == num_of_rows - 1:
+            # last row is all LUT6_2 pairs; nothing left to group
+            continue
+        for j in range(2, width_a - 2, 2):
             xdc_str += f"""
 set pp_row{i}_i{j} [get_cells -hier -filter {{NAME =~ "*/LUT5_row{i}_inst{j}"}}]
 set pp_row{i}_i{j+1} [get_cells -hier -filter {{NAME =~ "*/LUT5_row{i}_inst{j+1}"}}]
@@ -330,7 +447,8 @@ def Bmult_RTL_gen(width_a: int, width_b: int, pipeline_stages: int, gen_testbenc
                           width_b=OPB_width,
                           bitheap_list=bitheap_list,
                           out_reg=reg_flag_list[0],
-                          file_name=f"Bmult{width_a}x{width_b}_bitheap_gen")
+                          file_name=f"Bmult{width_a}x{width_b}_bitheap_gen",
+                          b_extended=B_extend_flag)
 
     ### generate the RTL and XDC compressor for bit heap compression
     with open("bitheap.txt", "w", encoding="utf-8") as f:

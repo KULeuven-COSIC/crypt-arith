@@ -1,0 +1,424 @@
+"""Inner-module backends: obtaining/generating the concrete .sv for each
+block kind (DSP tiles, LUT multipliers, bitheap compressor trees), plus
+the project's small hand-written parameterized primitives (sub_signed,
+SmallMult, delay_line).
+"""
+from __future__ import annotations
+
+from contextlib import contextmanager, redirect_stdout
+import io
+import os
+from pathlib import Path
+import tempfile
+from typing import Iterator
+
+import dsp_multiplier.backend.delay_model as DM
+import dsp_multiplier.backend.ir as IR
+from rtl_gen.dsp_multiplier.interface import (
+    BlockRequest,
+    _bitheap_columns,
+    _cmp_out_width,
+    _bitheap_is_plain_add,
+    _dsp_inner_module_name,
+)
+
+
+@contextmanager
+def _generator_workdir() -> Iterator[Path]:
+    """Run a file-writing LUT backend in an isolated temporary directory."""
+    previous = Path.cwd()
+    with tempfile.TemporaryDirectory(prefix="crypt_arith_rtl_") as temp:
+        workdir = Path(temp)
+        try:
+            os.chdir(workdir)
+            yield workdir
+        finally:
+            os.chdir(previous)
+
+@contextmanager
+def _quiet() -> Iterator[None]:
+    """Swallow stdout: compressor_RTL_gen's underlying heuristic/compressor
+    modules print their own progress chatter (LUT usage, pipeline-stage
+    counts, ...) that's noise from this per-block call site."""
+    with redirect_stdout(io.StringIO()):
+        yield
+
+
+def _write_sv(path: Path, body: list[str]) -> Path:
+    """Write a .sv file with a timescale header."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "`timescale 1ns / 1ps\n\n" + "\n".join(body) + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _copy_generated(workdir: Path, sv_dir: Path, xdc_dir: Path
+                    ) -> tuple[list[Path], list[Path]]:
+    """Copy out the RTL_generated / xdc_generated output a generator
+       produced in the temp directory. Must be called INSIDE
+       _generator_workdir's with-block, or the directory is already gone."""
+    sv_out: list[Path] = []
+    xdc_out: list[Path] = []
+
+    src_sv = workdir / "RTL_generated"
+    if src_sv.is_dir():
+        sv_dir.mkdir(parents=True, exist_ok=True)
+        for src in sorted(src_sv.glob("*.sv")):
+            if src.name.endswith("_tb.sv"):
+                continue                      # skip the testbench
+            dest = sv_dir / src.name
+            dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+            sv_out.append(dest)
+
+    src_xdc = workdir / "xdc_generated"
+    if src_xdc.is_dir():
+        for src in sorted(src_xdc.glob("*.xdc")):
+            text = src.read_text(encoding="utf-8")
+            if not text.strip():
+                continue                      # skip empty constraint files
+            xdc_dir.mkdir(parents=True, exist_ok=True)
+            dest = xdc_dir / src.name
+            dest.write_text(text, encoding="utf-8")
+            xdc_out.append(dest)
+
+    return sv_out, xdc_out
+
+
+def _cmp_reg_flags(heights: list[int], pipeline_stages: int) -> list[bool]:
+    """Mirror the compressor CLI's layer analysis and register placement."""
+    if not heights or not any(heights):
+        raise ValueError("bit-heap compressor requires at least one input bit")
+
+    from bitheap import BitHeap
+    from heuristic import compressAll, formGPCChain, merge_last_stage
+    from rtl_gen.compressor import reg_flag_list_gen
+
+    width = sum(height << col for col, height in enumerate(heights)).bit_length()
+    heap = BitHeap(width, 0)
+    for col, height in enumerate(heights):
+        heap.add_bits(col, height)
+
+    last_heap, raw_counters = compressAll(heap, 0, width - 1, False, False)
+    counter_layers = formGPCChain(raw_counters)
+    num_layers = len(counter_layers)
+    if num_layers >= 2:
+        merge_last, _ = merge_last_stage(counter_layers[-1], last_heap)
+        if merge_last:
+            num_layers -= 1
+
+    # The final boundary belongs to the terminal adder.  The legacy helper
+    # divides by pipeline_stages, so represent its documented combinational
+    # mode locally without changing the existing LUT backend.
+    boundary_count = num_layers + 1
+    flags = (
+        [False] * boundary_count
+        if pipeline_stages == 0
+        else reg_flag_list_gen(pipeline_stages, boundary_count)
+    )
+    if sum(flags) != pipeline_stages:
+        raise ValueError(
+            f"requested {pipeline_stages} compressor stages, generated "
+            f"{sum(flags)}"
+        )
+    return flags
+
+
+# ---------------------------------------------------------------- DSP inner blocks
+# The single family's two hand-written source files live under
+# latency_model/rtl/, at the project root (same convention core/
+# backend_delay_model.py uses when referring to latency_model's *.py
+# files). DSP58Block.sv is a primitive shared by both paths -- SingleDSP.sv
+# and the chain/k2/k3/t25 circuits generated by latency_model both
+# instantiate it, so both paths need it copied in.
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_LATENCY_MODEL_RTL_DIR = _PROJECT_ROOT / "rtl" / "dsp_multiplier"
+_DSP58BLOCK_SRC = _LATENCY_MODEL_RTL_DIR / "DSP58Block.sv"
+_SINGLE_DSP_SRC = _LATENCY_MODEL_RTL_DIR / "SingleDSP.sv"
+
+
+def _copy_static_rtl(src: Path, dest_dir: Path) -> Path:
+    """Copy a hand-written .sv that isn't generated straight into the
+    project -- DSP58Block.sv / SingleDSP.sv."""
+    if not src.is_file():
+        raise FileNotFoundError(
+            f"Missing {src}.\n"
+            f"  DSP inner-block generation needs this hand-written source; "
+            f"confirm it's under latency_model/rtl/ at the project root."
+        )
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / src.name
+    dest.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    return dest
+
+
+def _write_dsp_inner(r: BlockRequest, sv_dir: Path, xdc_dir: Path
+                     ) -> tuple[list[Path], list[Path]]:
+    """DSP inner block: actually generated by latency_model (chain/k2/k3/t25)
+       or copied from the hand-written template (single). The latency must
+       be strictly buildable -- exact_dsp_config gates this here, and
+       whether the latency was pinned by mode0 from SeedTiles or chosen by
+       mode3, it's a hard error if it can't be built, never silently
+       substituted with a smaller one."""
+    fam, blocks = DM.dsp_family(r.params, r.instance_name)
+    result = DM.exact_dsp_config(fam, blocks, r.latency, label=r.instance_name)
+    name = _dsp_inner_module_name(fam, blocks, r.latency)
+    if name != r.inner_module_name:
+        raise AssertionError(
+            f"{r.instance_name}: inner_module_name computed differently in two "
+            f"places ({r.inner_module_name!r} vs {name!r}) -- "
+            f"_dsp_inner_module_name and _default_inner_module_name have drifted apart."
+        )
+
+    dsp58 = _copy_static_rtl(_DSP58BLOCK_SRC, sv_dir)   # all four paths instantiate it
+
+    if fam == "single":
+        return [_copy_static_rtl(_SINGLE_DSP_SRC, sv_dir), dsp58], []
+
+    if fam == "chain":
+        from rtl_gen.dsp_multiplier.dsp import dsp_rtl_gen
+        path = dsp_rtl_gen.gen_dsp_chain(result["config"], blocks, result,
+                                         outdir=str(sv_dir), module=name)
+    elif fam == "k2":
+        from rtl_gen.dsp_multiplier.dsp import k2_rtl_gen
+        path = k2_rtl_gen.gen_karatsuba2(result["config"], result,
+                                         outdir=str(sv_dir), module=name)
+    elif fam == "k3":
+        from rtl_gen.dsp_multiplier.dsp import k3_rtl_gen
+        path = k3_rtl_gen.gen_karatsuba3(result["config"], result,
+                                         outdir=str(sv_dir), module=name)
+    elif fam == "t25":
+        from rtl_gen.dsp_multiplier.dsp import t25_rtl_gen
+        path = t25_rtl_gen.gen_toomcook25(result["config"], result,
+                                          outdir=str(sv_dir), module=name)
+    else:
+        raise ValueError(fam)
+
+    return [Path(path), dsp58], []
+
+
+def _write_bmult_inner(r: BlockRequest, sv_dir: Path, xdc_dir: Path
+                       ) -> tuple[list[Path], list[Path], bool]:
+    """Generate a LUT multiplier, one file per module. Returns (sv, xdc,
+    whether GPC primitives were used)."""
+    pa, pb = r.inner_a_width, r.inner_b_width
+    expected = f"Bmult{pa}x{pb}"
+    if r.inner_module_name != expected:
+        raise ValueError(
+            f"{r.module_name}: LUT inner should be {expected}, got {r.inner_module_name}"
+        )
+    # Only a large multiplier reaches here (small ones are already skipped
+    # in write_rtl_project). The old code checked min(pa, pb) < 6 here --
+    # using the sign-padded width, which doesn't match lut_count's
+    # min(external) <= 5 -- a silent inconsistency.
+    if min(pa, pb) < 6:
+        raise AssertionError(
+            f"{r.module_name}: the Booth core requires both sides >= 6, got {pa}x{pb}. "
+            f"Check SMALL_MULT_MAX and _inner_widths' convention."
+        )
+
+    from rtl_gen.booth_mult import Bmult_RTL_gen
+
+    with _generator_workdir() as workdir:
+        Bmult_RTL_gen(
+            width_a=pa, width_b=pb,
+            pipeline_stages=r.latency,
+            gen_testbenches=False, test_size=1,
+        )
+        sv, xdc = _copy_generated(workdir, sv_dir, xdc_dir)
+
+    if not (sv_dir / f"{expected}.sv").is_file():
+        raise RuntimeError(f"the Booth generator didn't produce {expected}.sv")
+    return sv, xdc, True
+
+
+def _write_bitheap_inner(r: BlockRequest, sv_dir: Path, xdc_dir: Path
+                         ) -> tuple[list[Path], list[Path]]:
+    """Generate a compressor tree, one file per module."""
+    from rtl_gen.compressor import compressor_RTL_gen
+
+    cols = _bitheap_columns(r)
+
+    if _bitheap_is_plain_add(r):
+        raise AssertionError(
+            f"{r.inner_module_name}: a heap with column height <=2 shouldn't go "
+            f"through the compressor-tree generator (terminalAdd_gen would produce "
+            f"an illegal slice); the wrapper should add it directly instead."
+        )
+
+    heights = [len(bits) for bits in cols]
+    reg_flags = _cmp_reg_flags(heights, r.latency)
+
+    with _generator_workdir() as workdir:
+        descriptor = workdir / "bitheap.txt"
+        descriptor.write_text(
+            "".join(f"{h}\n" for h in heights), encoding="utf-8"
+        )
+        with _quiet():
+            compressor_RTL_gen(
+                txt_file_name=str(descriptor),
+                sv_file_name=r.inner_module_name,
+                compressor_module_name=r.inner_module_name,
+                tb_out_width=_cmp_out_width(cols),
+                reg_flag_list=reg_flags,
+                visualization=False, gen_testbench=False, test_size=1,
+            )
+        sv, xdc = _copy_generated(workdir, sv_dir, xdc_dir)
+
+    if not (sv_dir / f"{r.inner_module_name}.sv").is_file():
+        raise RuntimeError(f"the compressor-tree generator didn't produce {r.inner_module_name}.sv")
+    return sv, xdc
+
+
+def _copy_gpc_primitives(dest: Path) -> list[Path]:
+    """Copy every GPC counter primitive (c15_3.sv etc.) into the project.
+    Any design using a LUT-packed bitheap instantiates these by name."""
+    rtl_dir = _PROJECT_ROOT / "rtl"
+    dest.mkdir(parents=True, exist_ok=True)
+    out: list[Path] = []
+    for filename in _GPC_RTL_FILES:
+        src = rtl_dir / filename
+        if not src.is_file():
+            raise RuntimeError(f"Missing GPC primitive file: {src}")
+        target = dest / filename
+        target.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+        out.append(target)
+    return out
+
+def _sub_signed_module() -> list[str]:
+    """The generic parameterized subtractor: always signed inside.
+       LATENCY cycles = 1 subtraction register stage + (LATENCY-1) stages
+       of output-side FFs. The whole project only needs this one file;
+       width/latency come from the wrapper's instantiation parameters."""
+    return [
+        "module sub_signed #(",
+        "    parameter  int PA      = 1,",
+        "    parameter  int PB      = 1,",
+        "    parameter  int LATENCY = 1,",
+        "    localparam int PW = (PA > PB ? PA : PB) + 1",
+        ") (",
+        "    input  logic clk,",
+        "    input  logic signed [PA-1:0] A,",
+        "    input  logic signed [PB-1:0] B,",
+        "    output logic signed [PW-1:0] P",
+        ");",
+        "    logic signed [PW-1:0] diff;",
+        "    assign diff = A - B;",
+        "",
+        "    generate",
+        "        if (LATENCY == 0) begin : g_comb",
+        "            assign P = diff;",
+        "        end else begin : g_pipe",
+        "            logic signed [PW-1:0] stage [0:LATENCY-1];",
+        "            always_ff @(posedge clk) begin",
+        "                stage[0] <= diff;                 // subtraction + FF stage 1",
+        "                for (int i = 1; i < LATENCY; i++)  // remaining FFs are all output-side",
+        "                    stage[i] <= stage[i-1];",
+        "            end",
+        "            assign P = stage[LATENCY-1];",
+        "        end",
+        "    endgenerate",
+        "endmodule",
+        "",
+    ]
+
+def _small_mult_module() -> list[str]:
+    """Behavioral small multiplier: used when min(external width) <= 5,
+       letting Vivado infer it. The whole project only needs this one
+       file; width / sign / latency come from the wrapper's instantiation
+       parameters. Port names A/B/P must match _inner_ports("lut_mult").
+
+       use_dsp="no" can't be dropped: a behavioral * defaults to inferring
+       a DSP58, which would show 0 LUTs but silently eat into the DSP
+       budget the solver is managing."""
+    return [
+        '(* use_dsp = "no" *)',
+        "module SmallMult #(",
+        "    parameter  int WA       = 4,",
+        "    parameter  int WB       = 4,",
+        "    parameter  bit A_SIGNED = 1,",
+        "    parameter  bit B_SIGNED = 1,",
+        "    parameter  int LATENCY  = 1,",
+        "    localparam int PW = WA + WB",
+        ") (",
+        "    input  logic clk,",
+        "    input  logic [WA-1:0] A,",
+        "    input  logic [WB-1:0] B,",
+        "    output logic [PW-1:0] P",
+        ");",
+        "    logic [PW-1:0] prod;",
+        "",
+        "    // The four sign combinations are hardcoded separately: SV's",
+        "    // signedness is decided by context -- as soon as one unsigned",
+        "    // operand is in an expression, the whole multiplication is",
+        "    // evaluated as unsigned, and the signed side gets treated as",
+        "    // a big positive number. So a ternary shortcut here isn't safe.",
+        "    generate",
+        "        if (A_SIGNED && B_SIGNED) begin : g_ss",
+        "            assign prod = PW'($signed(A)) * PW'($signed(B));",
+        "        end else if (A_SIGNED) begin : g_su",
+        "            assign prod = PW'($signed(A)) * PW'($signed({1'b0, B}));",
+        "        end else if (B_SIGNED) begin : g_us",
+        "            assign prod = PW'($signed({1'b0, A})) * PW'($signed(B));",
+        "        end else begin : g_uu",
+        "            assign prod = PW'(A) * PW'(B);",
+        "        end",
+        "    endgenerate",
+        "",
+        "    generate",
+        "        if (LATENCY == 0) begin : g_comb",
+        "            assign P = prod;",
+        "        end else begin : g_pipe",
+        "            logic [PW-1:0] stage [0:LATENCY-1];",
+        "            always_ff @(posedge clk) begin",
+        "                stage[0] <= prod;",
+        "                for (int i = 1; i < LATENCY; i++)",
+        "                    stage[i] <= stage[i-1];",
+        "            end",
+        "            assign P = stage[LATENCY-1];",
+        "        end",
+        "    endgenerate",
+        "endmodule",
+        "",
+    ]
+
+
+def _delay_line_module() -> list[str]:
+    """A generic shift-register chain. The whole project only needs this one file."""
+    return [
+        "module delay_line #(",
+        "    parameter int WIDTH  = 1,",
+        "    parameter int CYCLES = 1",
+        ") (",
+        "    input  logic             clk,",
+        "    input  logic [WIDTH-1:0] d,",
+        "    output logic [WIDTH-1:0] q",
+        ");",
+        "    generate",
+        "        if (CYCLES == 0) begin : g_passthrough",
+        "            assign q = d;",
+        "        end else begin : g_chain",
+        "            logic [WIDTH-1:0] r [0:CYCLES-1];",
+        "            always_ff @(posedge clk) begin",
+        "                r[0] <= d;",
+        "                for (int i = 1; i < CYCLES; i++) r[i] <= r[i-1];",
+        "            end",
+        "            assign q = r[CYCLES-1];",
+        "        end",
+        "    endgenerate",
+        "endmodule",
+        "",
+    ]
+
+
+_GPC_RTL_FILES = (
+    "c3_2.sv",
+    "c6_3.sv",
+    "c9_41.sv",
+    "c15_3.sv",
+    "c39_231.sv",
+    "c223_4.sv",
+    "c413_341.sv",
+    "c517_451.sv",
+)

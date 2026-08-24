@@ -418,6 +418,24 @@ def compressLayer(bitheap: BitHeap, startColumn: int, stopColumn: int) -> list:
     return layer_chains
 
 
+def _place_fallback_rescue(bitheap: BitHeap, startColumn: int, stopColumn: int) -> list:
+    """Place a last-resort floating (6 : 3] counter after a stalled layer.
+
+    The hand-tuned placement table has no rule for some isolated columns at
+    heights 7, 8, 10, or 11 when the neighboring column has no free bits.
+    In that state ``compressLayer`` makes no progress and ``compressAll``
+    would otherwise loop forever.  This fallback is only used after a full
+    layer pass placed nothing, so it does not affect inputs handled by the
+    normal table.
+    """
+    for col in range(startColumn, stopColumn + 1):
+        if bitheap.heap[col].number_of_free_bits >= 6:
+            counter_inst = Counter("(6 : 3]", [6], [1, 1, 1], False, True, col, 3)
+            counter_inst.commit(bitheap=bitheap, check_bound=False)
+            return [[counter_inst]]
+    return []
+
+
 def compressAll(bitheap: BitHeap, startColumn: int, stopColumn: int, plotBitHeap: bool, printUsage: bool) -> tuple[BitHeap, list]:
     """Compress the entire bitheap layer by layer until each column has at most 4 free bits.
 
@@ -434,6 +452,23 @@ def compressAll(bitheap: BitHeap, startColumn: int, stopColumn: int, plotBitHeap
     previous_bitheap = copy.deepcopy(bitheap)
     while not finish_flag:
         counter_layer = compressLayer(bitheap, startColumn, stopColumn)
+        if not counter_layer:
+            done, _ = bitheap.check_last_layer()
+            if not done:
+                counter_layer = _place_fallback_rescue(
+                    bitheap, startColumn, stopColumn
+                )
+                if not counter_layer:
+                    stuck = [
+                        (i, column.number_of_free_bits)
+                        for i, column in enumerate(bitheap.heap[:bitheap.width])
+                        if column.number_of_free_bits > 4
+                    ]
+                    raise RuntimeError(
+                        "compressAll: no counter (including the >=6-free-bits "
+                        "fallback) applies to any remaining column, but the "
+                        f"heap isn't terminal. Columns still >4 free bits: {stuck}"
+                    )
         layer_list.append(counter_layer)
         bitheap.advance_round()
         if plotBitHeap:
@@ -520,4 +555,3 @@ def merge_last_stage(last_compression_layer_counter_list: list[list], last_compr
                 return False, [[[0]]]
         reduced_inputs_list.append(chain_reduced_inputs)
     return True, reduced_inputs_list
-

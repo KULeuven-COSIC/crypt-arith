@@ -139,19 +139,33 @@ def placeGPCs(BitHeap: BitHeap, startColumn: int, stopColumn: int) -> tuple[list
     current_chain: list[Counter] = []
     advance_flag = True
     state = [False, 0]
+    # Column holding the carry of the chain currently under construction, or None.
+    # Every GPC but (9 : 4,1) advances `col` onto its own carry column as it is
+    # placed; (9 : 4,1) deliberately stays put so it can keep eating a tall column,
+    # which leaves its carry one column ahead of the cursor.
+    pending_cascade_col = None
 
     def _place(c: Counter) -> None:
-        # Track chain boundaries at placement time. A non-cascade-in counter starts a
-        # new chain; a cascade-in counter extends the chain currently being built.
-        # When a chain-ending counter (out_cascade=False) is placed, it stays in the
-        # current chain — the next non-cascade-in placement triggers chain finalization.
-        nonlocal current_chain
+        # Track chain boundaries at placement time, then commit. A non-cascade-in
+        # counter starts a new chain; a cascade-in counter extends the chain currently
+        # being built. Starting a new chain also retracts any cascade bit still pending
+        # from the previous chain: out_cascade=True only means the producer *can* be
+        # cascaded from, and once no successor claims it the producer emits that bit as
+        # an ordinary output (chain_gen's CHAIN_END path). Leaving the flag set lets an
+        # unrelated GPC claim a carry-in that does not exist. Commit happens here, after
+        # the clear, so the new counter's own cascade bit survives.
+        nonlocal current_chain, pending_cascade_col
         if c.in_cascade:
             current_chain.append(c)
         else:
+            BitHeap.clear_cascade_bits()
             if current_chain:
                 chains.append(current_chain)
             current_chain = [c]
+        c.commit(bitheap=BitHeap, check_bound=False)
+        # Counter.commit flags the cascade bit on the MSB output column
+        # (i == len(outputs) - 1); mirror that expression, do not re-derive it.
+        pending_cascade_col = c.applied_column + len(c.outputs) - 1 if c.out_cascade else None
 
     while col <= stopColumn:
         # try column counters first
@@ -165,7 +179,6 @@ def placeGPCs(BitHeap: BitHeap, startColumn: int, stopColumn: int) -> tuple[list
             applied_column = col
             LUT_cost = 8
             counter_inst = Counter(name, inputs, outputs, in_cascade, out_cascade, applied_column, LUT_cost)
-            counter_inst.commit(bitheap=BitHeap, check_bound=False)
             _place(counter_inst)
             col += 1
             advance_flag = False
@@ -182,7 +195,6 @@ def placeGPCs(BitHeap: BitHeap, startColumn: int, stopColumn: int) -> tuple[list
             applied_column = col
             LUT_cost = 6
             counter_inst = Counter(name, inputs, outputs, in_cascade, out_cascade, applied_column, LUT_cost)
-            counter_inst.commit(bitheap=BitHeap, check_bound=False)
             _place(counter_inst)
             col += 1
             advance_flag = False
@@ -200,7 +212,6 @@ def placeGPCs(BitHeap: BitHeap, startColumn: int, stopColumn: int) -> tuple[list
                 applied_column = col
                 LUT_cost = 4
                 counter_inst = Counter(name, inputs, outputs, in_cascade, out_cascade, applied_column, LUT_cost)
-                counter_inst.commit(bitheap=BitHeap, check_bound=False)
                 _place(counter_inst)
                 col += 2
                 advance_flag = False
@@ -217,7 +228,6 @@ def placeGPCs(BitHeap: BitHeap, startColumn: int, stopColumn: int) -> tuple[list
             applied_column = col
             LUT_cost = 4
             counter_inst = Counter(name, inputs, outputs, in_cascade, out_cascade, applied_column, LUT_cost)
-            counter_inst.commit(bitheap=BitHeap, check_bound=False)
             _place(counter_inst)
             col += 2
             advance_flag = False
@@ -235,7 +245,6 @@ def placeGPCs(BitHeap: BitHeap, startColumn: int, stopColumn: int) -> tuple[list
                 applied_column = col
                 LUT_cost = 3
                 counter_inst = Counter(name, inputs, outputs, in_cascade, out_cascade, applied_column, LUT_cost)
-                counter_inst.commit(bitheap=BitHeap, check_bound=False)
                 _place(counter_inst)
                 # col += 1
                 advance_flag = False
@@ -252,7 +261,6 @@ def placeGPCs(BitHeap: BitHeap, startColumn: int, stopColumn: int) -> tuple[list
             applied_column = col
             LUT_cost = 3
             counter_inst = Counter(name, inputs, outputs, in_cascade, out_cascade, applied_column, LUT_cost)
-            counter_inst.commit(bitheap=BitHeap, check_bound=False)
             _place(counter_inst)
             # col += 1
             advance_flag = False
@@ -269,7 +277,6 @@ def placeGPCs(BitHeap: BitHeap, startColumn: int, stopColumn: int) -> tuple[list
             applied_column = col
             LUT_cost = 3
             counter_inst = Counter(name, inputs, outputs, in_cascade, out_cascade, applied_column, LUT_cost)
-            counter_inst.commit(bitheap=BitHeap, check_bound=False)
             _place(counter_inst)
             col += 2
             advance_flag = False
@@ -287,7 +294,6 @@ def placeGPCs(BitHeap: BitHeap, startColumn: int, stopColumn: int) -> tuple[list
                 applied_column = col
                 LUT_cost = 2
                 counter_inst = Counter(name, inputs, outputs, in_cascade, out_cascade, applied_column, LUT_cost)
-                counter_inst.commit(bitheap=BitHeap, check_bound=False)
                 _place(counter_inst)
                 col += 1
                 advance_flag = False
@@ -304,7 +310,6 @@ def placeGPCs(BitHeap: BitHeap, startColumn: int, stopColumn: int) -> tuple[list
             applied_column = col
             LUT_cost = 2
             counter_inst = Counter(name, inputs, outputs, in_cascade, out_cascade, applied_column, LUT_cost)
-            counter_inst.commit(bitheap=BitHeap, check_bound=False)
             _place(counter_inst)
             col += 3
             advance_flag = False
@@ -328,7 +333,6 @@ def placeGPCs(BitHeap: BitHeap, startColumn: int, stopColumn: int) -> tuple[list
                 else:
                     out_cascade = True
                 counter_inst = Counter(name, inputs, outputs, in_cascade, out_cascade, applied_column, LUT_cost)
-                counter_inst.commit(bitheap=BitHeap, check_bound=False)
                 _place(counter_inst)
                 if not out_cascade:
                     BitHeap.clear_cascade_bits()
@@ -345,7 +349,6 @@ def placeGPCs(BitHeap: BitHeap, startColumn: int, stopColumn: int) -> tuple[list
             applied_column = col
             LUT_cost = 1
             counter_inst = Counter(name, inputs, outputs, in_cascade, out_cascade, applied_column, LUT_cost)
-            counter_inst.commit(bitheap=BitHeap, check_bound=False)
             _place(counter_inst)
             col += 1
             advance_flag = False
@@ -370,7 +373,6 @@ def placeGPCs(BitHeap: BitHeap, startColumn: int, stopColumn: int) -> tuple[list
                 else:
                     out_cascade = True
                 counter_inst = Counter(name, inputs, outputs, in_cascade, out_cascade, applied_column, LUT_cost)
-                counter_inst.commit(bitheap=BitHeap, check_bound=False)
                 _place(counter_inst)
                 if not out_cascade:
                     BitHeap.clear_cascade_bits()
@@ -387,7 +389,6 @@ def placeGPCs(BitHeap: BitHeap, startColumn: int, stopColumn: int) -> tuple[list
             applied_column = col
             LUT_cost = 2
             counter_inst = Counter(name, inputs, outputs, in_cascade, out_cascade, applied_column, LUT_cost)
-            counter_inst.commit(bitheap=BitHeap, check_bound=False)
             _place(counter_inst)
             col += 2
             advance_flag = False
@@ -395,7 +396,12 @@ def placeGPCs(BitHeap: BitHeap, startColumn: int, stopColumn: int) -> tuple[list
             state[1] = 2
             continue
         col += 1
-        BitHeap.clear_cascade_bits()
+        # Nothing was placeable here, so the chain under construction is over --
+        # unless the column we just stepped onto is the one holding its carry, which
+        # only happens after a (9 : 4,1). Retracting it there would strand the carry
+        # and stop (9 : 4,1) from ever heading a chain.
+        if pending_cascade_col != col:
+            BitHeap.clear_cascade_bits()
     if current_chain:
         chains.append(current_chain)
     return chains, advance_flag

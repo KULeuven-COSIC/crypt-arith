@@ -32,6 +32,12 @@ def chain_gen(counter_list: list[Counter], layer_no: int, chain_no: int, chain_i
     start_col = subchain_list[0][0].applied_column
     i_cnt = 0
     pos_cnt = 0
+    # chain_outputs is one flat list for the whole chain and chain_gen locates a
+    # counter's entry by `applied_column - start_col`, which assumes every GPC
+    # contributes as many output entries as columns it advances. (9 : 4,1) breaks
+    # that: 2 entries (col, col+1) for 1 column of advance. Set to 1 when this chain
+    # is headed by a (9 : 4,1) that has a successor, shifting every later lookup.
+    out_shift = 0
     num_subchain = len(subchain_list)
     for j in range(num_subchain):
         subchain = subchain_list[j]
@@ -40,6 +46,7 @@ def chain_gen(counter_list: list[Counter], layer_no: int, chain_no: int, chain_i
             if subchain[i] == "CHAIN_END":
                 i_cnt = 0
                 pos_cnt = 0
+                out_shift = 0
                 break
             if subchain[i] == "SUBCHAIN_END":
                 pos_cnt = 2
@@ -100,8 +107,8 @@ set_property LUTNM grp_l{layer_no}_c{chain_no}_i{i_cnt} $lut_lo_l{layer_no}_c{ch
                 if layer_outputs[subchain[i].applied_column] == 1:
                     out_str0 = f"layer{layer_no+1}_col{subchain[i].applied_column}"
                 else:
-                    out_str0 = f"layer{layer_no+1}_col{subchain[i].applied_column}[{chain_outputs[col][0]}]"
-                out_str1 = f"layer{layer_no+1}_col{subchain[i].applied_column+1}[{max(chain_outputs[col+1])}:{min(chain_outputs[col+1])}]"
+                    out_str0 = f"layer{layer_no+1}_col{subchain[i].applied_column}[{chain_outputs[col + out_shift][0]}]"
+                out_str1 = f"layer{layer_no+1}_col{subchain[i].applied_column+1}[{max(chain_outputs[col+1 + out_shift])}:{min(chain_outputs[col+1 + out_shift])}]"
                 out_str_list = [out_str0, out_str1]
                 max_len = max(len(s) for s in out_str_list)
                 instan += f"""
@@ -151,6 +158,10 @@ set_property LUTNM grp_l{layer_no}_c{chain_no}_i{i_cnt} $lut_lo_l{layer_no}_c{ch
                 # increment GPC instance counter and position counter
                 pos_cnt += 2
                 i_cnt += 1
+                # 2 output entries for 1 column of advance -- shift every later
+                # lookup in this chain. Same predicate as LEAVEC / O1 vs O1[2:0].
+                if subchain[i+1] != "CHAIN_END":
+                    out_shift += 1
             elif subchain[i].name == "(6 : 3]":
                 # this counter can only start a chain and never ends a chain
                 # so it is always the first lut in a counter chain
@@ -183,11 +194,11 @@ set_property LUTNM grp_l{layer_no}_c{chain_no}_i{i_cnt} $lut_lo_l{layer_no}_c{ch
                 if layer_outputs[subchain[i].applied_column] == 1:
                     out_str0 = f"layer{layer_no+1}_col{subchain[i].applied_column}"
                 else:
-                    out_str0 = f"layer{layer_no+1}_col{subchain[i].applied_column}[{chain_outputs[col][0]}]"
+                    out_str0 = f"layer{layer_no+1}_col{subchain[i].applied_column}[{chain_outputs[col + out_shift][0]}]"
                 if layer_outputs[subchain[i].applied_column+1] == 1:
                     out_str1 = f"layer{layer_no+1}_col{subchain[i].applied_column+1}"
                 else:
-                    out_str1 = f"layer{layer_no+1}_col{subchain[i].applied_column+1}[{chain_outputs[col+1][0]}]"
+                    out_str1 = f"layer{layer_no+1}_col{subchain[i].applied_column+1}[{chain_outputs[col+1 + out_shift][0]}]"
                 out_str_list = [out_str0, out_str1]
                 max_len = max(len(s) for s in out_str_list)
                 instan += f"""
@@ -268,19 +279,19 @@ set_property LUTNM grp_l{layer_no}_c{chain_no}_i{i_cnt} $lut_lo_l{layer_no}_c{ch
                 if layer_outputs[subchain[i].applied_column] == 1:
                     out_str0 = f"layer{layer_no+1}_col{subchain[i].applied_column}"
                 else:
-                    out_str0 = f"layer{layer_no+1}_col{subchain[i].applied_column}[{chain_outputs[col][0]}]"
+                    out_str0 = f"layer{layer_no+1}_col{subchain[i].applied_column}[{chain_outputs[col + out_shift][0]}]"
                 if layer_outputs[subchain[i].applied_column+1] == 1:
                     out_str1 = f"layer{layer_no+1}_col{subchain[i].applied_column+1}"
                 else:
-                    out_str1 = f"layer{layer_no+1}_col{subchain[i].applied_column+1}[{chain_outputs[col+1][0]}]"
+                    out_str1 = f"layer{layer_no+1}_col{subchain[i].applied_column+1}[{chain_outputs[col+1 + out_shift][0]}]"
                 if layer_outputs[subchain[i].applied_column+2] == 1:
                     out_str2 = f"layer{layer_no+1}_col{subchain[i].applied_column+2}"
                 else:
-                    out_str2 = f"layer{layer_no+1}_col{subchain[i].applied_column+2}[{chain_outputs[col+2][0]}]"
+                    out_str2 = f"layer{layer_no+1}_col{subchain[i].applied_column+2}[{chain_outputs[col+2 + out_shift][0]}]"
                 if layer_outputs[subchain[i].applied_column+3] == 1:
                     out_str3 = f"layer{layer_no+1}_col{subchain[i].applied_column+3}"
                 else:
-                    out_str3 = f"layer{layer_no+1}_col{subchain[i].applied_column+3}[{chain_outputs[col+3][0]}]"
+                    out_str3 = f"layer{layer_no+1}_col{subchain[i].applied_column+3}[{chain_outputs[col+3 + out_shift][0]}]"
                 out_str_list = [out_str0, out_str1, out_str2, out_str3]
                 max_len = max(len(s) for s in out_str_list)
                 instan += f"""
@@ -389,11 +400,11 @@ set_property LUTNM grp_l{layer_no}_c{chain_no}_i{i_cnt} $lut_lo_l{layer_no}_c{ch
                 if layer_outputs[subchain[i].applied_column] == 1:
                     out_str0 = f"layer{layer_no+1}_col{subchain[i].applied_column}"
                 else:
-                    out_str0 = f"layer{layer_no+1}_col{subchain[i].applied_column}[{chain_outputs[col][0]}]"
+                    out_str0 = f"layer{layer_no+1}_col{subchain[i].applied_column}[{chain_outputs[col + out_shift][0]}]"
                 if layer_outputs[subchain[i].applied_column+1] == 1:
                     out_str1 = f"layer{layer_no+1}_col{subchain[i].applied_column+1}"
                 else:
-                    out_str1 = f"layer{layer_no+1}_col{subchain[i].applied_column+1}[{chain_outputs[col+1][0]}]"
+                    out_str1 = f"layer{layer_no+1}_col{subchain[i].applied_column+1}[{chain_outputs[col+1 + out_shift][0]}]"
                 out_str_list = [out_str0, out_str1]
                 max_len = max(len(s) for s in out_str_list)
                 instan += f"""
@@ -510,15 +521,15 @@ set_property LUTNM grp_l{layer_no}_c{chain_no}_i{i_cnt} $lut_lo_l{layer_no}_c{ch
                 if layer_outputs[subchain[i].applied_column] == 1:
                     out_str0 = f"layer{layer_no+1}_col{subchain[i].applied_column}"
                 else:
-                    out_str0 = f"layer{layer_no+1}_col{subchain[i].applied_column}[{chain_outputs[col][0]}]"
+                    out_str0 = f"layer{layer_no+1}_col{subchain[i].applied_column}[{chain_outputs[col + out_shift][0]}]"
                 if layer_outputs[subchain[i].applied_column+1] == 1:
                     out_str1 = f"layer{layer_no+1}_col{subchain[i].applied_column+1}"
                 else:
-                    out_str1 = f"layer{layer_no+1}_col{subchain[i].applied_column+1}[{chain_outputs[col+1][0]}]"
+                    out_str1 = f"layer{layer_no+1}_col{subchain[i].applied_column+1}[{chain_outputs[col+1 + out_shift][0]}]"
                 if layer_outputs[subchain[i].applied_column+2] == 1:
                     out_str2 = f"layer{layer_no+1}_col{subchain[i].applied_column+2}"
                 else:
-                    out_str2 = f"layer{layer_no+1}_col{subchain[i].applied_column+2}[{chain_outputs[col+2][0]}]"
+                    out_str2 = f"layer{layer_no+1}_col{subchain[i].applied_column+2}[{chain_outputs[col+2 + out_shift][0]}]"
                 out_str_list = [out_str0, out_str1, out_str2]
                 max_len = max(len(s) for s in out_str_list)
                 instan += f"""
@@ -633,12 +644,12 @@ set_property LUTNM grp_l{layer_no}_c{chain_no}_i{i_cnt} $lut_lo_l{layer_no}_c{ch
                 if layer_outputs[subchain[i].applied_column] == 1:
                     out_str0 = f"layer{layer_no+1}_col{subchain[i].applied_column}"
                 else:
-                    out_str0 = f"layer{layer_no+1}_col{subchain[i].applied_column}[{chain_outputs[col][0]}]"
-                out_str1 = f"layer{layer_no+1}_col{subchain[i].applied_column+1}[{max(chain_outputs[col+1])}:{min(chain_outputs[col+1])}]"
+                    out_str0 = f"layer{layer_no+1}_col{subchain[i].applied_column}[{chain_outputs[col + out_shift][0]}]"
+                out_str1 = f"layer{layer_no+1}_col{subchain[i].applied_column+1}[{max(chain_outputs[col+1 + out_shift])}:{min(chain_outputs[col+1 + out_shift])}]"
                 if subchain[i+1] == "CHAIN_END":
-                    out_str2 = f"layer{layer_no+1}_col{subchain[i].applied_column+2}[{max(chain_outputs[col+2])}:{min(chain_outputs[col+2])}]"
+                    out_str2 = f"layer{layer_no+1}_col{subchain[i].applied_column+2}[{max(chain_outputs[col+2 + out_shift])}:{min(chain_outputs[col+2 + out_shift])}]"
                 else:
-                    out_str2 = f"layer{layer_no+1}_col{subchain[i].applied_column+2}[{chain_outputs[col+2][-1]}]"
+                    out_str2 = f"layer{layer_no+1}_col{subchain[i].applied_column+2}[{chain_outputs[col+2 + out_shift][-1]}]"
                 out_str_list = [out_str0, out_str1, out_str2]
                 max_len = max(len(s) for s in out_str_list)
                 instan += f"""

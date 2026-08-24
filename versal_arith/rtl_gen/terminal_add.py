@@ -3,6 +3,18 @@ from rtl_gen.lookahead import LOOKAHEAD8_gen
 
 
 def terminalAdd_gen(terminal_layer_no: int, terminal_inputs: list[int], final_output_width: int, final_output_name: str, terminal_reg_flag: bool) -> tuple[str, str]:
+    # The quaternary terminal adder maps each column with the 0/1/2/3/4-bit ladders
+    # below; there is no branch for a taller column, so without this guard such a
+    # column would emit no C0 assignments at all and its bits would be dropped
+    # silently. Fail loudly instead: a column above 4 means the compression heuristic
+    # stopped a layer early -- see BitHeap.check_last_layer().
+    over = [(col, height) for col, height in enumerate(terminal_inputs) if height > 4]
+    if over:
+        raise ValueError(
+            f"terminalAdd_gen: the quaternary terminal adder takes at most 4 bits per "
+            f"column, got (column, height) {over}. The compression heuristic should "
+            f"have run another layer -- check BitHeap.check_last_layer()."
+        )
     # find out the tail part, the body part and the head part
     num_columns = len(terminal_inputs)
     terminalAdd_start = 0
